@@ -66,6 +66,7 @@ async function api(fn, args = {}) {
     if (code === 'SESSION_EXPIRED' && fn !== 'counter_login') { logout(true); }
     throw new ApiError(code);
   }
+  if (data && typeof data === 'object' && !Array.isArray(data) && data.error) throw new ApiError(data.error);
   return data;
 }
 let netOk = true;
