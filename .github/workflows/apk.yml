@@ -44,12 +44,17 @@ jobs:
 
       - name: App icon
         working-directory: shell
-        continue-on-error: true
         run: |
-          mkdir -p assets
-          cp www/icon-512.png assets/icon-only.png
-          cp www/icon-512.png assets/icon-foreground.png
-          npx --yes @capacitor/assets@3.0.5 generate --android --iconBackgroundColor '#4a2fbd'
+          R=android/app/src/main/res
+          for d in mdpi:48:108 hdpi:72:162 xhdpi:96:216 xxhdpi:144:324 xxxhdpi:192:432; do
+            n=${d%%:*}; rest=${d#*:}; s=${rest%%:*}; f=${rest#*:}
+            convert www/icon-512.png -resize ${s}x${s} $R/mipmap-$n/ic_launcher.png
+            convert www/icon-512.png -resize ${s}x${s} $R/mipmap-$n/ic_launcher_round.png
+            # adaptive foreground: icon in the safe middle area on a transparent canvas
+            inner=$(( f * 60 / 100 ))
+            convert www/icon-512.png -resize ${inner}x${inner} -gravity center -background '#4a2fbd' -extent ${f}x${f} $R/mipmap-$n/ic_launcher_foreground.png
+          done
+          sed -i 's#<color name="ic_launcher_background">.*</color>#<color name="ic_launcher_background">\#4a2fbd</color>#' $R/values/ic_launcher_background.xml || true
 
       - name: Build APK
         working-directory: shell
