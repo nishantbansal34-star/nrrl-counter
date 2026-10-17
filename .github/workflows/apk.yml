@@ -54,10 +54,12 @@ jobs:
       - name: Build APK
         working-directory: shell
         run: |
-          npx cap sync android
+          set -o pipefail
+          report() { msg=$(tail -c 3500 "$1" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g'); echo "::error title=$2::$msg"; exit 1; }
+          npx cap sync android > sync.log 2>&1 || report sync.log "cap sync failed"
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --stacktrace > ../gradle.log 2>&1 || report ../gradle.log "gradle failed"
           cp app/build/outputs/apk/debug/app-debug.apk ../../nrrl-counter.apk
 
       - uses: actions/upload-artifact@v4
