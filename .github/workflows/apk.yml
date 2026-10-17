@@ -1,0 +1,73 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Prepare web files
+        run: |
+          mkdir -p shell/www
+          cp index.html app.js manifest.webmanifest icon-192.png icon-512.png shell/www/
+          # bundle the barcode library so scanning works without the CDN
+          curl -sSL https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js -o shell/www/zxing.min.js
+          sed -i 's#https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js#zxing.min.js#' shell/www/index.html
+
+      - name: Create Android project
+        working-directory: shell
+        run: |
+          npm init -y >/dev/null
+          npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0
+          npx cap init "NRRL Counter" in.nrrl.counter --web-dir www
+          npx cap add android
+          # camera permission for live barcode scanning
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />#' android/app/src/main/AndroidManifest.xml
+          grep -n "permission" android/app/src/main/AndroidManifest.xml
+
+      - name: App icon
+        working-directory: shell
+        continue-on-error: true
+        run: |
+          mkdir -p assets
+          cp www/icon-512.png assets/icon-only.png
+          cp www/icon-512.png assets/icon-foreground.png
+          npx --yes @capacitor/assets@3.0.5 generate --android --iconBackgroundColor '#4a2fbd'
+
+      - name: Build APK
+        working-directory: shell
+        run: |
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../../nrrl-counter.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nrrl-counter-apk
+          path: nrrl-counter.apk
+
+      - name: Publish as latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest nrrl-counter.apk --title "NRRL Counter (latest)" --notes "Install on Android: download nrrl-counter.apk and open it. Allow 'Install unknown apps' if asked."
