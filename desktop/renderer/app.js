@@ -258,19 +258,20 @@ function handleEntry(raw) {
   openItemForm({ code: v }, { fromBill: true, qty });
 }
 const priceFor = it => S.cart.mode === 'wholesale' && +it.wholesale > 0 ? +it.wholesale : +it.retail;
+const unitFor = it => S.cart.mode === 'wholesale' && +it.wholesale > 0 && it.wholesale_unit ? it.wholesale_unit : it.unit;
 function addItem(it, qty = 1) {
   if (!it) return;
   const L = S.cart.lines;
   let i = L.findIndex(l => l.code === it.code);
   if (i >= 0) L[i].qty = r2(L[i].qty + qty);
-  else { L.push({ code: it.code, name: it.name, unit: it.unit, gst: it.gst, rate: priceFor(it), listRate: true, qty: r2(qty) }); i = L.length - 1; }
+  else { L.push({ code: it.code, name: it.name, unit: unitFor(it), gst: it.gst, rate: priceFor(it), listRate: true, qty: r2(qty) }); i = L.length - 1; }
   S.sel = i; saveCart(); renderCart(i);
   beep(true); flashScan(true);
   if (it.stock != null && it.stock - L[i].qty < 0) toast(`${it.name}: only ${qf(it.stock)} ${it.unit} in stock`, { err: true, ms: 2500 });
 }
 function setMode(m) {
   S.cart.mode = m;
-  for (const l of S.cart.lines) { const it = S.items.get(l.code); if (it && l.listRate) l.rate = priceFor(it); }
+  for (const l of S.cart.lines) { const it = S.items.get(l.code); if (it) { l.unit = unitFor(it); if (l.listRate) l.rate = priceFor(it); } }
   saveCart(); renderCart();
 }
 function selectLine(i) {
@@ -392,7 +393,7 @@ async function saveBill(print) {
       lines: c.lines.map(l => ({ code: l.code, qty: l.qty, rate: l.rate, name: l.name, unit: l.unit, gst: l.gst })),
     });
     S.lastBill = bill;
-    for (const l of bill.lines) { const it = S.items.get(l.code); if (it && it.stock != null) it.stock = r2(it.stock - l.qty); }
+    for (const l of bill.lines) { const it = S.items.get(l.code); if (it && it.stock != null) it.stock = r2(it.stock - l.qty * (l.factor || 1)); }
     S.cart = newCart(c); S.sel = 0; saveCart();
     renderCart(); focusScan();
     if (print) {
@@ -424,8 +425,10 @@ async function openItemForm(it, opts = {}) {
       <label class="f w"><span>Item name</span><input type="text" id="fName" value="${esc(it?.name ?? '')}" placeholder="e.g. Metallic balloons, pack of 50"></label>
       <label class="f"><span>Retail price ₹ (incl. GST)</span><input type="number" step="any" id="fRetail" value="${it?.retail ?? ''}"></label>
       <label class="f"><span>Wholesale price ₹</span><input type="number" step="any" id="fWhole" value="${it?.wholesale || ''}" placeholder="Optional"></label>
+      <label class="f"><span>Wholesale price is per</span><select id="fWUnit"><option value="">Same as retail unit</option>${['pcs', 'dozen', 'pkt', 'box', 'set', 'roll', 'kg', 'mtr', 'pair'].map(u => `<option${it?.wholesale_unit === u ? ' selected' : ''}>${u}</option>`).join('')}</select></label>
+      <label class="f" id="fWQtyWrap"><span id="fWQtyLbl">Retail units in one wholesale unit</span><input type="number" step="any" id="fWQty" value="${it?.wholesale_qty && it.wholesale_qty !== 1 ? it.wholesale_qty : ''}" placeholder="e.g. 12"></label>
       <label class="f"><span>Stock in hand</span><input type="number" step="any" id="fStock" value="${it?.stock ?? ''}" placeholder="Blank = don’t track"></label>
-      <label class="f"><span>Unit</span><select id="fUnit">${(units.includes(unit) ? units : [unit, ...units]).map(u => `<option${u === unit ? ' selected' : ''}>${esc(u)}</option>`).join('')}</select></label>
+      <label class="f"><span>Retail rate is per</span><select id="fUnit">${(units.includes(unit) ? units : [unit, ...units]).map(u => `<option${u === unit ? ' selected' : ''}>${esc(u)}</option>`).join('')}</select></label>
       <label class="f"><span>GST %</span><select id="fGst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}"${(it?.gst ?? 18) == g ? ' selected' : ''}>${g}%</option>`).join('')}</select></label>
       <label class="f"><span>HSN code</span><input type="text" id="fHsn" value="${esc(it?.hsn ?? '')}" placeholder="Optional"></label>
       <label class="f"><span>Purchase price ₹</span><input type="number" step="any" id="fCost" value="${it?.cost || ''}" placeholder="Optional, for your reference"></label>
@@ -440,6 +443,14 @@ async function openItemForm(it, opts = {}) {
       <div class="confirmbar w" id="fConfirm" hidden><span>Remove this item from your list? Old bills keep their copy.</span><button type="button" class="btn" id="fNo">Keep</button><button type="button" class="btn danger" id="fYes">Remove</button></div>
     </form>`);
   setTimeout(() => (it?.code ? $('#fName', m) : $('#fCode', m)).focus(), 30);
+  const syncW = () => {
+    const wu = $('#fWUnit', m).value, ru = $('#fUnit', m).value;
+    const show = wu && wu !== ru;
+    $('#fWQtyWrap', m).hidden = !show;
+    $('#fWQtyLbl', m).textContent = `How many ${ru} in one ${wu}`;
+    if (show && !$('#fWQty', m).value && wu === 'dozen' && ru === 'pcs') $('#fWQty', m).value = 12;
+  };
+  $('#fWUnit', m).addEventListener('change', syncW); $('#fUnit', m).addEventListener('change', syncW); syncW();
   $('#fGen', m).addEventListener('click', async () => { $('#fCode', m).value = await rpc('items.nextCode'); $('#fName', m).focus(); });
   $('#fDel', m)?.addEventListener('click', () => { $('#fConfirm', m).hidden = false; });
   $('#fNo', m)?.addEventListener('click', () => { $('#fConfirm', m).hidden = true; });
@@ -448,9 +459,12 @@ async function openItemForm(it, opts = {}) {
     catch (err) { $('#fErr', m).textContent = err.message; }
   });
   const submit = async labels => {
+    if ($('#fWUnit', m).value && $('#fWUnit', m).value !== $('#fUnit', m).value && !(+$('#fWQty', m).value > 0)) { $('#fErr', m).textContent = `Enter how many ${$('#fUnit', m).value} are in one ${$('#fWUnit', m).value}.`; return; }
     const item = {
       code: $('#fCode', m).value.trim(), name: $('#fName', m).value.trim(), retail: $('#fRetail', m).value, wholesale: $('#fWhole', m).value,
-      stock: $('#fStock', m).value.trim(), unit: $('#fUnit', m).value, gst: $('#fGst', m).value, hsn: $('#fHsn', m).value, cost: $('#fCost', m).value, min_stock: $('#fMin', m).value.trim(),
+      stock: $('#fStock', m).value.trim(), unit: $('#fUnit', m).value,
+      wholesale_unit: $('#fWUnit', m).value === $('#fUnit', m).value ? '' : $('#fWUnit', m).value,
+      wholesale_qty: $('#fWUnit', m).value && $('#fWUnit', m).value !== $('#fUnit', m).value ? ($('#fWQty', m).value || 1) : 1, gst: $('#fGst', m).value, hsn: $('#fHsn', m).value, cost: $('#fCost', m).value, min_stock: $('#fMin', m).value.trim(),
     };
     try {
       const saved = await rpc('items.save', item, editing ? it.code : null);
@@ -624,7 +638,7 @@ function renderItemRows() {
     : `<thead><tr><th>Item</th><th>Code</th><th class="r">Retail</th><th class="r">Wholesale</th><th class="r">Stock</th><th class="r">GST</th><th class="r" style="width:250px"></th></tr></thead>
       <tbody>${shown.map(it => `<tr class="click" data-code="${esc(it.code)}">
         <td><b>${esc(it.name)}</b></td><td class="num muted">${esc(it.code)}</td>
-        <td class="r num">${money(it.retail)}</td><td class="r num">${+it.wholesale ? money(it.wholesale) : '<span class="muted">—</span>'}</td>
+        <td class="r num">${money(it.retail)}<span class="muted small">/${esc(it.unit)}</span></td><td class="r num">${+it.wholesale ? money(it.wholesale) + (it.wholesale_unit ? `<span class="muted small">/${esc(it.wholesale_unit)}</span>` : '') : '<span class="muted">—</span>'}</td>
         <td class="r">${stockChip(it)}</td><td class="r num muted">${qf(it.gst)}%</td>
         <td class="r"><button type="button" class="btn" data-act="stock">+ Stock</button> <button type="button" class="btn" data-act="label">Labels</button> <button type="button" class="btn" data-act="edit">Edit</button></td></tr>`).join('')}</tbody>`;
 }
@@ -653,6 +667,8 @@ const HEAD = {
   unit: ['unit', 'uom'],
   gst: ['gst', 'gst %', 'gst%', 'tax', 'tax %'],
   hsn: ['hsn', 'hsn code', 'hsn/sac'],
+  wholesale_unit: ['wholesale unit', 'w unit', 'wholesale per'],
+  wholesale_qty: ['wholesale qty', 'pcs per wholesale', 'units per wholesale', 'qty per wholesale'],
 };
 function rowsToItems(rows) {
   if (!rows.length) return [];
@@ -666,7 +682,8 @@ function rowsToItems(rows) {
   const num = v => String(v ?? '').replace(/[₹,\s]|rs\.?/gi, '').replace(/%$/, '');
   return rows.map(r => ({
     code: r[map.code] ?? '', name: r[map.name] ?? '', retail: num(r[map.retail]), wholesale: num(r[map.wholesale]), cost: num(r[map.cost]),
-    stock: map.stock != null ? num(r[map.stock]) : '', unit: (r[map.unit] || 'pcs').toLowerCase(), gst: map.gst != null && r[map.gst] !== '' ? num(r[map.gst]) : 18, hsn: r[map.hsn] ?? '',
+    stock: map.stock != null ? num(r[map.stock]) : '', unit: (r[map.unit] || 'pcs').toLowerCase(),
+    wholesale_unit: map.wholesale_unit != null ? String(r[map.wholesale_unit] || '').toLowerCase() : '', wholesale_qty: map.wholesale_qty != null ? num(r[map.wholesale_qty]) || 1 : 1, gst: map.gst != null && r[map.gst] !== '' ? num(r[map.gst]) : 18, hsn: r[map.hsn] ?? '',
   }));
 }
 async function importCsv() {
@@ -706,8 +723,8 @@ async function saveCsv(name, rows) {
   catch (err) { toast(err.message, { err: true }); }
 }
 function exportItems() {
-  saveCsv(`nrrl-items-${today()}.csv`, [['Code', 'Name', 'Retail', 'Wholesale', 'Stock', 'Unit', 'GST', 'HSN', 'Cost'],
-    ...[...S.items.values()].map(i => [i.code, i.name, i.retail, i.wholesale, i.stock ?? '', i.unit, i.gst, i.hsn, i.cost])]);
+  saveCsv(`nrrl-items-${today()}.csv`, [['Code', 'Name', 'Retail', 'Wholesale', 'Stock', 'Unit', 'GST', 'HSN', 'Cost', 'Wholesale unit', 'Wholesale qty'],
+    ...[...S.items.values()].map(i => [i.code, i.name, i.retail, i.wholesale, i.stock ?? '', i.unit, i.gst, i.hsn, i.cost, i.wholesale_unit || '', i.wholesale_unit ? i.wholesale_qty : ''])]);
 }
 
 /* ================= sales screen ================= */
@@ -844,6 +861,10 @@ async function renderSettings() {
         <label class="f" style="flex-direction:row;align-items:center;gap:8px;padding-top:18px"><input type="checkbox" id="s_label_flip" ${s.label_flip === '1' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Print upside down</span></label>
         <label class="f"><span>Move print right (mm)</span><input type="number" step="0.5" id="s_label_shift" value="${esc(s.label_shift)}" placeholder="0"></label>
         <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_label_price" ${s.label_price !== '0' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Show price on label</span></label>
+        <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_label_wcode" ${s.label_wcode !== '0' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Show wholesale rate as a code</span></label>
+        <label class="f"><span>Wholesale code starts with</span><input type="text" id="s_wcode_prefix" value="${esc(s.wcode_prefix ?? 'NRRL')}"></label>
+        <label class="f"><span>Wholesale code = wholesale rate ×</span><input type="number" step="any" id="s_wcode_mult" value="${esc(s.wcode_mult || '2')}"></label>
+        <p class="muted small w" id="wcodeEx"></p>
         <label class="f"><span>Low-stock alert at (default)</span><input type="number" id="s_low_stock" value="${esc(s.low_stock)}"></label>
         <p class="muted small w">The size is printed on the roll’s box, e.g. “38×25 mm, 3 up”. If the print sits off the labels, change the gap or move it left/right (negative moves it left).</p>
       </div>
@@ -867,16 +888,18 @@ async function renderSettings() {
     </div>
     <div class="toolbar" style="position:sticky;bottom:0;padding:14px 0 0;background:var(--bg);margin-top:14px"><button type="button" class="btn primary big" id="sSave" style="min-width:220px">Save settings</button><span class="muted small" id="sMsg"></span><span class="muted small" style="margin-left:auto">NRRL Billing v${esc(info.version)}</span></div>
   </div>`;
-  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density'];
+  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density', 'wcode_prefix', 'wcode_mult'];
   const collect = () => {
     const o = {}; for (const k of keys) o[k] = $('#s_' + k).value;
-    o.label_price = $('#s_label_price').checked ? '1' : '0'; o.label_flip = $('#s_label_flip').checked ? '1' : '0';
+    o.label_price = $('#s_label_price').checked ? '1' : '0'; o.label_flip = $('#s_label_flip').checked ? '1' : '0'; o.label_wcode = $('#s_label_wcode').checked ? '1' : '0';
     return o;
   };
   const save = async quiet => {
     try { S.settings = await rpc('settings.save', collect()); if (!quiet) { toast('Settings saved'); $('#sMsg').textContent = 'Saved'; } return true; }
     catch (err) { toast(err.message, { err: true }); return false; }
   };
+  const wEx = () => { const m2 = +$('#s_wcode_mult').value || 2; $('#wcodeEx').textContent = `Example: wholesale ₹45 per dozen prints as ${$('#s_wcode_prefix').value}${Math.round(45 * m2 * 100) / 100}/doz. Only your staff know to read it as ₹45.`; };
+  $('#s_wcode_prefix').addEventListener('input', wEx); $('#s_wcode_mult').addEventListener('input', wEx); wEx();
   $('#sSave').addEventListener('click', () => save(false));
   $('#testPrint').addEventListener('click', async () => { if (!(await save(true))) return; rpc('print.test').then(() => toast('Test receipt sent')).catch(err => toast(err.message, { err: true, ms: 9000 })); });
   $('#prevPrint').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.preview', 'sample'); openModal(`<h2>Receipt preview</h2><p class="muted">Paper ${esc(S.settings.paper)} mm. The real print may look slightly different depending on the printer.</p><div style="display:flex;justify-content:center"><iframe title="Receipt preview" sandbox srcdoc="${esc(html)}" style="border:1px solid var(--line);width:${S.settings.paper === '58' ? 240 : 330}px;height:560px;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`); });
@@ -932,7 +955,7 @@ async function init() {
     S.lastBill = await rpc('bills.last').catch(() => null);
   } catch (err) { document.body.innerHTML = `<div class="empty"><b>NRRL Billing could not start</b>${esc(err.message)}</div>`; return; }
   // keep cart lines in sync with any price changes since last time
-  for (const l of S.cart.lines) { const it = S.items.get(l.code); if (it) { l.name = it.name; l.unit = it.unit; l.gst = it.gst; if (l.listRate !== false) l.rate = priceFor(it); } }
+  for (const l of S.cart.lines) { const it = S.items.get(l.code); if (it) { l.name = it.name; l.unit = unitFor(it); l.gst = it.gst; if (l.listRate !== false) l.rate = priceFor(it); } }
   buildBill(); renderLock(); renderBackupState();
   setInterval(renderBackupState, 5 * 60e3);
   window.addEventListener('focus', () => focusScan());

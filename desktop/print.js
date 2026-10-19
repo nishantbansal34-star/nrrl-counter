@@ -143,6 +143,19 @@ async function barcodeImage(code, s) {
   return { bars, dpm, widthMm, moduleMm: dots / dpm, dots, fits: dots >= minDots && widthMm <= w, maxModules, modules };
 }
 
+const UNIT_SHORT = { pcs: 'pc', pc: 'pc', piece: 'pc', dozen: 'doz', doz: 'doz', pkt: 'pkt', packet: 'pkt', pack: 'pack' };
+const unitShort = u => UNIT_SHORT[String(u || 'pcs').toLowerCase()] || String(u || 'pc');
+const plain = n => n2(n).replace(/\.00$/, '');
+/* Rates printed on a label: retail as is, wholesale as a code (e.g. NRRL90 = ₹45 wholesale when the multiplier is 2). */
+function labelRates(item, s) {
+  const retail = s.label_price !== '0' ? { cur: true, amt: plain(item.retail), unit: unitShort(item.unit) } : null;
+  let ws = null;
+  if (s.label_wcode !== '0' && +item.wholesale > 0) {
+    const mult = isFinite(+s.wcode_mult) && +s.wcode_mult > 0 ? +s.wcode_mult : 2;
+    ws = { code: (s.wcode_prefix ?? 'NRRL') + plain(+item.wholesale * mult).replace(/,/g, ''), unit: unitShort(item.wholesale_unit || item.unit) };
+  }
+  return { retail, ws };
+}
 function labelCell(item, s, bc, xMm) {
   const showPrice = s.label_price !== '0';
   if (!item) return `<div class="lab" style="left:${xMm.toFixed(3)}mm"></div>`;
@@ -154,7 +167,8 @@ function labelCell(item, s, bc, xMm) {
   return `<div class="lab" style="left:${xMm.toFixed(3)}mm">
       <div class="nm">${esc(item.name)}</div>
       <div class="bc"><svg class="bars" style="left:${(absLeft - xMm).toFixed(4)}mm;width:${bc.widthMm.toFixed(4)}mm" viewBox="0 0 ${vw} 100" preserveAspectRatio="none" shape-rendering="crispEdges" fill="#000">${rects}</svg></div>
-      <div class="row"><span class="code">${esc(item.code)}</span>${showPrice ? `<span class="pr">₹${n2(item.retail).replace(/\.00$/, '')}</span>` : ''}</div>
+      <div class="code">${esc(item.code)}</div>
+      ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}
     </div>`;
 }
 /* list = one entry per label (item or null for a blank). Each printed page is one row of the roll. */
@@ -174,8 +188,10 @@ function labelsHTML(list, s, bcs) {
     .bc{flex:1;min-height:0;position:relative;margin:.4mm 0}
     .bars{position:absolute;top:0;height:100%}
     .row{display:flex;justify-content:space-between;align-items:baseline;gap:1mm;padding:0 1.5mm;white-space:nowrap}
-    .code{font-size:${small ? 5.5 : 6.5}pt;font-family:Consolas,monospace;overflow:hidden;text-overflow:ellipsis}
-    .pr{font-size:${small ? 8.5 : 11}pt;font-weight:800}
+    .code{font-size:${small ? 5 : 6}pt;font-family:Consolas,monospace;text-align:center;line-height:1.1;white-space:nowrap;overflow:hidden}
+    .pr{font-size:${small ? 8.5 : 11}pt;font-weight:800;line-height:1}
+    .ws{font-size:${small ? 7.5 : 9.5}pt;font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
+    .pr small,.ws small{font-size:.72em;font-weight:700}
   </style></head><body>${rows.map(r => `<div class="pg">${r.map((it, i) => labelCell(it, s, it && bcs[it.code], shift + i * (w + gap))).join('')}</div>`).join('')}</body></html>`;
 }
 async function buildLabels(entries, s) {
@@ -258,13 +274,21 @@ async function tsplLabels(entries, s) {
       const bw = dataModules * bc.dots;
       const nameMax = Math.max(4, Math.floor((wD - 2 * pad) / 12));
       const name = tsplText(it.name).slice(0, nameMax);
-      const priceTxt = s.label_price !== '0' ? 'Rs.' + n2(it.retail).replace(/\.00$/, '') : '';
-      const topY = D(1), nameH = 20, botH = 24, botY = hD - D(0.8) - botH;
-      const bcY = topY + nameH + D(0.8), bcH = Math.max(D(5), botY - D(0.8) - bcY);
+      const r = labelRates(it, s);
+      const left = r.retail ? `Rs.${r.retail.amt}/${r.retail.unit}`.replace(/,/g, '') : '';
+      const right = r.ws ? `${r.ws.code}/${r.ws.unit}` : '';
+      // pick the biggest built-in font that fits both rates on one line
+      const avail = wD - 2 * pad - 8;
+      const font = (left.length + right.length) * 12 <= avail ? { f: '2', cw: 12, ch: 20 } : { f: '1', cw: 8, ch: 12 };
+      const topY = D(1), nameH = 20;
+      const rateY = hD - D(0.8) - font.ch, codeY = rateY - 2 - 12;
+      const bcY = topY + nameH + D(0.6), bcH = Math.max(D(5), codeY - D(0.4) - bcY);
       out.push(`TEXT ${x0 + pad},${topY},"2",0,1,1,"${name}"`);
       out.push(`BARCODE ${x0 + Math.max(0, Math.round((wD - bw) / 2))},${bcY},"${TYPE[kind]}",${bcH},0,0,${bc.dots},${bc.dots},"${tsplText(it.code)}"`);
-      out.push(`TEXT ${x0 + pad},${botY + 8},"1",0,1,1,"${tsplText(it.code).slice(0, Math.floor((wD - 2 * pad) / 8) - priceTxt.length * 2)}"`);
-      if (priceTxt) out.push(`TEXT ${x0 + wD - pad - priceTxt.length * 16},${botY},"3",0,1,1,"${priceTxt}"`);
+      const codeTxt = tsplText(it.code).slice(0, Math.floor((wD - 2 * pad) / 8));
+      out.push(`TEXT ${x0 + Math.round((wD - codeTxt.length * 8) / 2)},${codeY},"1",0,1,1,"${codeTxt}"`);
+      if (left) out.push(`TEXT ${x0 + pad},${rateY},"${font.f}",0,1,1,"${left}"`);
+      if (right) out.push(`TEXT ${x0 + wD - pad - right.length * font.cw},${rateY},"${font.f}",0,1,1,"${right}"`);
     });
     out.push('PRINT 1,1');
   }

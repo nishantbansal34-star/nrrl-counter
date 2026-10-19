@@ -38,6 +38,9 @@ const DEFAULTS = {
   label_dpi: '203',
   label_across: '1',
   label_mode: 'windows',
+  label_wcode: '1',
+  wcode_prefix: 'NRRL',
+  wcode_mult: '2',
   label_vgap: '2',
   label_flip: '0',
   label_density: '10',
@@ -51,7 +54,7 @@ const DEFAULTS = {
   next_code: '10001',
 };
 const EDITABLE = new Set(['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'printer', 'paper', 'print_margin', 'font_size',
-  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'low_stock', 'backup_extra']);
+  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
 
 class Store {
   constructor(file) {
@@ -96,6 +99,10 @@ class Store {
         id integer primary key autoincrement, code text not null, qty real not null, kind text not null, ref text, at text not null);
       create table if not exists settings(key text primary key, value text);
     `);
+    const addCol = (t, c, def) => { if (!this.db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) this.db.exec(`alter table ${t} add column ${c} ${def}`); };
+    addCol('items', 'wholesale_unit', "text not null default ''");
+    addCol('items', 'wholesale_qty', 'real not null default 1');
+    addCol('bill_lines', 'factor', 'real not null default 1');
     const ins = this.db.prepare('insert or ignore into settings(key,value) values(?,?)');
     for (const [k, v] of Object.entries(DEFAULTS)) ins.run(k, v);
   }
@@ -145,7 +152,7 @@ class Store {
 
   /* ---------- items ---------- */
   allItems() {
-    return this.db.prepare(`select code,name,retail,wholesale,cost,stock,min_stock,unit,gst,hsn from items where active=1 order by name collate nocase`).all();
+    return this.db.prepare(`select code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn from items where active=1 order by name collate nocase`).all();
   }
   getItem(code) { return this.db.prepare('select * from items where code=?').get(String(code)); }
   nextCode() {
@@ -167,6 +174,7 @@ class Store {
       code, name, retail, wholesale: Math.max(0, r2(it.wholesale)), cost: Math.max(0, r2(it.cost)),
       stock: numOrNull(it.stock), min_stock: numOrNull(it.min_stock),
       unit: String(it.unit || 'pcs').trim() || 'pcs', gst, hsn: String(it.hsn ?? '').trim(), now: nowLocal(),
+      wholesale_unit: String(it.wholesale_unit || '').trim(), wholesale_qty: +it.wholesale_qty > 0 ? r2(it.wholesale_qty) : 1,
     };
   }
   saveItem(it, oldCode) {
@@ -184,9 +192,10 @@ class Store {
         this.db.prepare('update items set code=? where code=?').run(row.code, oldCode);
         this.db.prepare('update stock_moves set code=? where code=?').run(row.code, oldCode);
       } else if (ex) prevStock = ex.active ? ex.stock : null;
-      this.db.prepare(`insert into items(code,name,retail,wholesale,cost,stock,min_stock,unit,gst,hsn,active,created_at,updated_at)
-        values(@code,@name,@retail,@wholesale,@cost,@stock,@min_stock,@unit,@gst,@hsn,1,@now,@now)
-        on conflict(code) do update set name=excluded.name, retail=excluded.retail, wholesale=excluded.wholesale, cost=excluded.cost,
+      this.db.prepare(`insert into items(code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,active,created_at,updated_at)
+        values(@code,@name,@retail,@wholesale,@wholesale_unit,@wholesale_qty,@cost,@stock,@min_stock,@unit,@gst,@hsn,1,@now,@now)
+        on conflict(code) do update set name=excluded.name, retail=excluded.retail, wholesale=excluded.wholesale, wholesale_unit=excluded.wholesale_unit,
+          wholesale_qty=excluded.wholesale_qty, cost=excluded.cost,
           stock=excluded.stock, min_stock=excluded.min_stock, unit=excluded.unit, gst=excluded.gst, hsn=excluded.hsn, active=1, updated_at=excluded.updated_at`).run(row);
       const diff = r2((row.stock ?? 0) - (prevStock ?? 0));
       if (row.stock != null && diff !== 0) this._move(row.code, diff, prevStock == null && !ex ? 'opening' : 'adjust', 'edit');
@@ -211,10 +220,12 @@ class Store {
   importItems(rows) {
     let imported = 0, skipped = 0; const errors = [];
     const has = this.db.prepare('select stock, active from items where code=?');
-    const up = this.db.prepare(`insert into items(code,name,retail,wholesale,cost,stock,min_stock,unit,gst,hsn,active,created_at,updated_at)
-      values(@code,@name,@retail,@wholesale,@cost,@stock,@min_stock,@unit,@gst,@hsn,1,@now,@now)
+    const up = this.db.prepare(`insert into items(code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,active,created_at,updated_at)
+      values(@code,@name,@retail,@wholesale,@wholesale_unit,@wholesale_qty,@cost,@stock,@min_stock,@unit,@gst,@hsn,1,@now,@now)
       on conflict(code) do update set name=excluded.name, retail=excluded.retail,
         wholesale=case when excluded.wholesale>0 then excluded.wholesale else items.wholesale end,
+        wholesale_unit=case when excluded.wholesale_unit<>'' then excluded.wholesale_unit else items.wholesale_unit end,
+        wholesale_qty=case when excluded.wholesale_unit<>'' then excluded.wholesale_qty else items.wholesale_qty end,
         cost=case when excluded.cost>0 then excluded.cost else items.cost end,
         stock=coalesce(excluded.stock, items.stock), min_stock=coalesce(excluded.min_stock, items.min_stock),
         unit=excluded.unit, gst=excluded.gst, hsn=case when excluded.hsn<>'' then excluded.hsn else items.hsn end, active=1, updated_at=excluded.updated_at`);
@@ -252,11 +263,14 @@ class Store {
       for (const l of lines) {
         const it = this.getItem(l.code);
         if (!it && !l.name) throw new Error(`Item ${l.code} is not in the item list.`);
-        const listRate = it ? (mode === 'wholesale' && it.wholesale > 0 ? it.wholesale : it.retail) : 0;
+        const ws = !!(it && mode === 'wholesale' && it.wholesale > 0);
+        const listRate = it ? (ws ? it.wholesale : it.retail) : 0;
+        const unit = it ? (ws && it.wholesale_unit ? it.wholesale_unit : it.unit) : (l.unit || 'pcs');
+        const factor = ws && it.wholesale_unit && it.wholesale_unit !== it.unit ? (+it.wholesale_qty > 0 ? +it.wholesale_qty : 1) : 1;
         const rate = l.rate !== '' && l.rate != null && isFinite(+l.rate) && +l.rate >= 0 ? r2(l.rate) : listRate;
         const q = r2(l.qty), amt = r2(rate * q), g = it ? +it.gst : (+l.gst || 0);
         sub += amt; gst += amt * g / (100 + g); qty += q;
-        out.push({ code: String(l.code), name: it ? it.name : String(l.name), unit: it ? it.unit : (l.unit || 'pcs'), hsn: it ? it.hsn : '', gst: g, qty: q, rate, amount: amt, tracked: !!(it && it.stock != null) });
+        out.push({ code: String(l.code), name: it ? it.name : String(l.name), unit, factor, hsn: it ? it.hsn : '', gst: g, qty: q, rate, amount: amt, tracked: !!(it && it.stock != null) });
       }
       sub = r2(sub);
       const disc = Math.min(Math.max(r2(p.discount), 0), sub);
@@ -272,11 +286,12 @@ class Store {
       const info = this.db.prepare(`insert into bills(bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst)
         values(?,?,?,?,?,?,?,?,?,?,?,?)`).run(billNo, now, mode, payment, String(p.customer || '').trim(), String(p.phone || '').trim(), out.length, r2(qty), sub, disc, total, gst);
       const bid = info.lastInsertRowid;
-      const insL = this.db.prepare('insert into bill_lines(bill_id,code,name,unit,hsn,gst,qty,rate,amount) values(?,?,?,?,?,?,?,?,?)');
+      const insL = this.db.prepare('insert into bill_lines(bill_id,code,name,unit,hsn,gst,qty,rate,amount,factor) values(?,?,?,?,?,?,?,?,?,?)');
       const dec = this.db.prepare('update items set stock=round(stock-?,2) where code=? and stock is not null');
       for (const l of out) {
-        insL.run(bid, l.code, l.name, l.unit, l.hsn, l.gst, l.qty, l.rate, l.amount);
-        if (l.tracked) { dec.run(l.qty, l.code); this._move(l.code, -l.qty, 'sale', billNo); }
+        insL.run(bid, l.code, l.name, l.unit, l.hsn, l.gst, l.qty, l.rate, l.amount, l.factor);
+        const sq = r2(l.qty * l.factor);
+        if (l.tracked) { dec.run(sq, l.code); this._move(l.code, -sq, 'sale', billNo); }
       }
       return bid;
     })();
@@ -285,7 +300,7 @@ class Store {
   getBill(id) {
     const b = this.db.prepare('select * from bills where id=?').get(id);
     if (!b) return null;
-    b.lines = this.db.prepare('select code,name,unit,hsn,gst,qty,rate,amount from bill_lines where bill_id=? order by id').all(id);
+    b.lines = this.db.prepare('select code,name,unit,hsn,gst,qty,rate,amount,factor from bill_lines where bill_id=? order by id').all(id);
     return b;
   }
   lastBill() { const r = this.db.prepare('select id from bills order by id desc limit 1').get(); return r ? this.getBill(r.id) : null; }
@@ -306,7 +321,8 @@ class Store {
       const inc = this.db.prepare('update items set stock=round(stock+?,2) where code=? and stock is not null');
       for (const l of b.lines) {
         const it = this.getItem(l.code);
-        if (it && it.stock != null) { inc.run(l.qty, l.code); this._move(l.code, l.qty, 'cancel', b.bill_no); }
+        const sq = r2(l.qty * (l.factor || 1));
+        if (it && it.stock != null) { inc.run(sq, l.code); this._move(l.code, sq, 'cancel', b.bill_no); }
       }
       this.db.prepare('update bills set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id);
     })();
@@ -323,9 +339,9 @@ class Store {
   }
   itemSales(from, to) {
     const [a, b] = this._range(from, to);
-    return this.db.prepare(`select l.code, max(l.name) name, max(l.unit) unit, round(sum(l.qty),2) qty, round(sum(l.amount),2) amount, count(distinct l.bill_id) bills
+    return this.db.prepare(`select l.code, max(l.name) name, l.unit unit, round(sum(l.qty),2) qty, round(sum(l.amount),2) amount, count(distinct l.bill_id) bills
       from bill_lines l join bills b on b.id=l.bill_id
-      where b.cancelled=0 and b.created_at>=? and b.created_at<? group by l.code order by amount desc limit 2000`).all(a, b);
+      where b.cancelled=0 and b.created_at>=? and b.created_at<? group by l.code, l.unit order by amount desc limit 2000`).all(a, b);
   }
   counts() {
     return this.db.prepare(`select (select count(*) from items where active=1) items, (select count(*) from bills) bills`).get();
