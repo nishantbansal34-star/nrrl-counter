@@ -44,9 +44,10 @@ jobs:
               const s = new Store(require('path').join(app.getPath('temp'), 'nrrl-smoke.db'));
               s.saveItem({ code: 'T1', name: 'Test', retail: 10, stock: 5 });
               const b = s.saveBill({ lines: [{ code: 'T1', qty: 2 }] });
-              require('./print').barcodeSVG('NR10001');
-              console.log('SMOKE OK total=' + b.total);
-              app.exit(b.total === 20 ? 0 : 1);
+              require('./print').barcodeImage('NR10001', s.getSettings()).then(bc => {
+                console.log('SMOKE OK total=' + b.total + ' bar=' + bc.dots);
+                app.exit(b.total === 20 && bc.dots >= 2 ? 0 : 1);
+              }).catch(e => { console.error('SMOKE FAIL', e); app.exit(1); });
             } catch (e) { console.error('SMOKE FAIL', e); app.exit(1); }
           });
           JS
