@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self' about: data:; script-src 'self'">
+<title>NRRL Billing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand"><b>NRRL</b><span>Billing</span></div>
+    <nav id="nav">
+      <button type="button" data-view="bill"><span>Billing</span><kbd>F1</kbd></button>
+      <button type="button" data-view="items"><span>Items &amp; stock</span><kbd>F3</kbd></button>
+      <button type="button" data-view="sales"><span>Sales</span><kbd>F5</kbd></button>
+      <button type="button" data-view="settings"><span>Settings</span><kbd>F11</kbd></button>
+    </nav>
+    <div class="rail-foot">
+      <button type="button" id="lockBtn" class="lockbtn" hidden></button>
+      <div id="backupState" class="muted small"></div>
+    </div>
+  </aside>
+  <main id="main">
+    <section id="v-bill" class="view"></section>
+    <section id="v-items" class="view" hidden></section>
+    <section id="v-sales" class="view" hidden></section>
+    <section id="v-settings" class="view" hidden></section>
+  </main>
+</div>
+<div id="modals"></div>
+<div id="toasts" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

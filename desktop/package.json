@@ -1,0 +1,38 @@
+{
+  "name": "nrrl-billing",
+  "productName": "NRRL Billing",
+  "version": "1.0.0",
+  "description": "Barcode billing, thermal receipts and inventory for Nathu Ram Ram Lal",
+  "author": "Nathu Ram Ram Lal",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "dependencies": {
+    "better-sqlite3": "11.7.0",
+    "bwip-js": "4.5.1"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "in.nrrl.billing",
+    "productName": "NRRL Billing",
+    "files": ["main.js", "db.js", "print.js", "handlers.js", "preload.js", "renderer/**", "build/icon.png"],
+    "directories": { "output": "dist", "buildResources": "build" },
+    "asarUnpack": ["node_modules/better-sqlite3/**"],
+    "win": { "target": "nsis", "icon": "build/icon.png" },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NRRL Billing",
+      "artifactName": "NRRL-Billing-Setup-${version}.exe"
+    }
+  }
+}
