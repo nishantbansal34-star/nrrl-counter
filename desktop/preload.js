@@ -6,4 +6,8 @@ contextBridge.exposeInMainWorld('api', {
     if (!r || !r.ok) throw new Error((r && r.error) || 'Something went wrong.');
     return r.data;
   },
+  on: (channel, cb) => {
+    if (!['data-changed', 'link-progress'].includes(channel)) return;
+    ipcRenderer.on(channel, (e, data) => cb(data));
+  },
 });

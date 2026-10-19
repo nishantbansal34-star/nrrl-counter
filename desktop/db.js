@@ -39,6 +39,10 @@ const DEFAULTS = {
   label_across: '1',
   label_mode: 'windows',
   sheet_url: '',
+  link_key: '',
+  link_name: '',
+  link_items_at: '',
+  link_bills_after: '0',
   sheet_key: '',
   label_wcode: '1',
   wcode_prefix: 'NRRL',
@@ -100,6 +104,7 @@ class Store {
       create table if not exists stock_moves(
         id integer primary key autoincrement, code text not null, qty real not null, kind text not null, ref text, at text not null);
       create table if not exists settings(key text primary key, value text);
+      create table if not exists link_queue(id integer primary key autoincrement, kind text not null, payload text not null, created_at text not null, tries integer not null default 0, last_error text);
       create table if not exists sync_queue(id integer primary key autoincrement, kind text not null, payload text not null, created_at text not null, tries integer not null default 0, last_error text);
     `);
     const addCol = (t, c, def) => { if (!this.db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) this.db.exec(`alter table ${t} add column ${c} ${def}`); };
@@ -200,13 +205,18 @@ class Store {
         on conflict(code) do update set name=excluded.name, retail=excluded.retail, wholesale=excluded.wholesale, wholesale_unit=excluded.wholesale_unit,
           wholesale_qty=excluded.wholesale_qty, cost=excluded.cost,
           stock=excluded.stock, min_stock=excluded.min_stock, unit=excluded.unit, gst=excluded.gst, hsn=excluded.hsn, active=1, updated_at=excluded.updated_at`).run(row);
+      const renamed = !!(oldCode && oldCode !== row.code);
+      const isNew = renamed || !ex || !ex.active;
+      if (renamed) this.linkPush('item', { ...this._itemPayload(row.code, false), code: oldCode, removed: true });
+      this.linkPush('item', this._itemPayload(row.code, isNew));
       const diff = r2((row.stock ?? 0) - (prevStock ?? 0));
-      if (row.stock != null && diff !== 0) this._move(row.code, diff, prevStock == null && !ex ? 'opening' : 'adjust', 'edit');
+      if (row.stock != null && diff !== 0) this._move(row.code, diff, isNew ? 'opening' : 'adjust', 'edit');
     })();
     return this.getItem(row.code);
   }
   removeItem(code) {
     this.db.prepare('update items set active=0, updated_at=? where code=?').run(nowLocal(), String(code));
+    if (this.getItem(code)) this.linkPush('item', { ...this._itemPayload(String(code), false), removed: true });
     return true;
   }
   stockIn(code, qty, note) {
@@ -238,9 +248,11 @@ class Store {
         try { row = this._row(r); } catch (e) { skipped++; if (errors.length < 5) errors.push(`Row ${i + 1}: ${e.message}`); return; }
         const prev = has.get(row.code);
         up.run(row);
+        const isNew = !prev || !prev.active;
+        this.linkPush('item', this._itemPayload(row.code, isNew));
         if (row.stock != null) {
-          const diff = r2(row.stock - (prev && prev.active ? (prev.stock ?? 0) : 0));
-          if (diff) this._move(row.code, diff, prev ? 'adjust' : 'opening', 'import');
+          const diff = r2(row.stock - (!isNew ? (prev.stock ?? 0) : 0));
+          if (diff) this._move(row.code, diff, isNew ? 'opening' : 'adjust', 'import');
         }
         imported++;
       });
@@ -249,6 +261,14 @@ class Store {
   }
   _move(code, qty, kind, ref) {
     this.db.prepare('insert into stock_moves(code,qty,kind,ref,at) values(?,?,?,?,?)').run(code, qty, kind, ref || '', nowLocal());
+    // sales and cancellations reach the phone app with the bill; new items carry their opening stock
+    if (kind === 'adjust' || kind === 'purchase') this.linkPush('stock', { code, delta: qty });
+  }
+  _itemPayload(code, withStock) {
+    const it = this.getItem(code);
+    if (!it) return { code };
+    return { code: it.code, name: it.name, retail: it.retail, wholesale: it.wholesale, wholesale_unit: it.wholesale_unit, wholesale_qty: it.wholesale_qty,
+      cost: it.cost, min_stock: it.min_stock, unit: it.unit, gst: it.gst, hsn: it.hsn, removed: !it.active, stock: withStock ? it.stock : null };
   }
   itemHistory(code) {
     return this.db.prepare('select qty,kind,ref,at from stock_moves where code=? order by id desc limit 50').all(String(code));
@@ -300,6 +320,7 @@ class Store {
     })();
     const saved = this.getBill(id);
     this.enqueue('bill', saved);
+    this.linkPush('bill', saved);
     return saved;
   }
   getBill(id) {
@@ -332,6 +353,7 @@ class Store {
       this.db.prepare('update bills set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id);
     })();
     this.enqueue('cancel', { bill_no: b.bill_no });
+    if (!/^M\d+$/.test(b.bill_no)) this.linkPush('cancel', { bill_no: b.bill_no });
     return this.getBill(id);
   }
   summary(from, to) {
@@ -366,6 +388,61 @@ class Store {
     this.db.transaction(() => { for (const id of ids) ins.run('bill', JSON.stringify(this.getBill(id)), nowLocal()); })();
     this.setSetting('items_dirty', '1');
     return ids.length;
+  }
+  /* ---------- link with the phone app ---------- */
+  linkOn() { return !!this.getSetting('link_key'); }
+  linkPush(kind, payload) {
+    if (!this.linkOn()) return;
+    this.db.prepare('insert into link_queue(kind,payload,created_at) values(?,?,?)').run(kind, JSON.stringify(payload), nowLocal());
+  }
+  linkPeek(n) { return this.db.prepare('select id,kind,payload,tries from link_queue order by id limit ?').all(n); }
+  linkDone(ids) { const d = this.db.prepare('delete from link_queue where id=?'); this.db.transaction(() => ids.forEach(i => d.run(i)))(); }
+  linkFail(ids, err) { const u = this.db.prepare('update link_queue set tries=tries+1, last_error=? where id=?'); this.db.transaction(() => ids.forEach(i => u.run(String(err).slice(0, 300), i)))(); }
+  linkCount() { return this.db.prepare('select count(*) n from link_queue').get().n; }
+  linkClear() { this.db.prepare('delete from link_queue').run(); }
+  /* Items as the phone app's server has them (server stock is the shared truth once linked). */
+  applyRemoteItems(list) {
+    let changed = 0;
+    const get = this.db.prepare('select * from items where code=?');
+    const up = this.db.prepare(`insert into items(code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,active,created_at,updated_at)
+      values(@code,@name,@retail,@wholesale,@wholesale_unit,@wholesale_qty,@cost,@stock,@min_stock,@unit,@gst,@hsn,@active,@now,@now)
+      on conflict(code) do update set name=excluded.name, retail=excluded.retail, wholesale=excluded.wholesale, wholesale_unit=excluded.wholesale_unit,
+        wholesale_qty=excluded.wholesale_qty, cost=excluded.cost, stock=excluded.stock, min_stock=excluded.min_stock, unit=excluded.unit, gst=excluded.gst,
+        hsn=excluded.hsn, active=excluded.active, updated_at=excluded.updated_at`);
+    this.db.transaction(() => {
+      for (const r of list) {
+        const row = { code: String(r.code), name: String(r.name || r.code), retail: r2(r.retail), wholesale: r2(r.wholesale), wholesale_unit: r.wholesale_unit || '',
+          wholesale_qty: +r.wholesale_qty > 0 ? +r.wholesale_qty : 1, cost: r2(r.cost), stock: r.stock == null ? null : r2(r.stock), min_stock: r.min_stock == null ? null : r2(r.min_stock),
+          unit: r.unit || 'pcs', gst: +r.gst || 0, hsn: r.hsn || '', active: r.removed ? 0 : 1, now: nowLocal() };
+        const cur = get.get(row.code);
+        if (!cur && !row.active) continue;
+        const same = cur && ['name', 'retail', 'wholesale', 'wholesale_unit', 'wholesale_qty', 'cost', 'stock', 'min_stock', 'unit', 'gst', 'hsn', 'active'].every(k => (cur[k] ?? null) == (row[k] ?? null));
+        if (same) continue;
+        up.run(row); changed++;
+      }
+    })();
+    return changed;
+  }
+  /* Bills made on phones, kept here for sales reports. Stock already counted on the server. */
+  importPhoneBills(list) {
+    let n = 0;
+    const has = this.db.prepare('select id from bills where bill_no=?');
+    this.db.transaction(() => {
+      for (const b of list) {
+        const no = 'M' + b.id;
+        if (has.get(no)) { if (b.deleted) this.db.prepare('update bills set cancelled=1 where bill_no=? and cancelled=0').run(no); continue; }
+        const lines = Array.isArray(b.lines) ? b.lines : [];
+        const qty = r2(lines.reduce((a, l) => a + (+l.qty || 0), 0));
+        const info = this.db.prepare(`insert into bills(bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst,cancelled)
+          values(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(no, String(b.created_at).slice(0, 19), b.mode || 'retail', b.payment || 'cash', b.customer || '', b.phone || '',
+          lines.length, qty, r2(b.subtotal), r2(b.discount), r2(b.total), r2(b.gst), b.deleted ? 1 : 0);
+        const ins = this.db.prepare('insert into bill_lines(bill_id,code,name,unit,hsn,gst,qty,rate,amount,factor) values(?,?,?,?,?,?,?,?,?,?)');
+        for (const l of lines) ins.run(info.lastInsertRowid, String(l.code), String(l.name || l.code), l.unit || 'pcs', l.hsn || '', +l.gst || 0, +l.qty || 0, r2(l.price), r2(l.amount), +l.factor || 1);
+        this.enqueue('bill', this.getBill(info.lastInsertRowid));
+        n++;
+      }
+    })();
+    return n;
   }
   counts() {
     return this.db.prepare(`select (select count(*) from items where active=1) items, (select count(*) from bills) bills`).get();

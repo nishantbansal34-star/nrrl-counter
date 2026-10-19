@@ -70,6 +70,11 @@ function makeHandlers(ctx) {
     'auth.check': pin => st().checkPin(pin),
     'auth.setPin': (oldPin, newPin) => st().setPin(oldPin, newPin),
 
+    'link.status': () => ctx.link.status(),
+    'link.owners': () => ctx.link.owners(),
+    'link.connect': (staffId, pin) => ctx.link.link(staffId, pin, ctx.progress),
+    'link.now': async () => { await ctx.link.tick(); return ctx.link.status(); },
+    'link.unlink': () => ctx.link.unlink(),
     'sync.status': () => ctx.sync.status(),
     'sync.script': () => ctx.sync.script(),
     'sync.connect': url => ctx.sync.test(url),

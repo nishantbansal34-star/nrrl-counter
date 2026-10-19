@@ -94,7 +94,7 @@ async function loadItems(quiet) {
     if (S.view === 'items') renderItems();
   } catch (e) { if (!quiet && !e.net) toast(e.message, true); }
 }
-function normItem(i) { return { code: String(i.code), name: i.name, retail: +i.retail, wholesale: +i.wholesale, stock: i.stock == null ? null : +i.stock, unit: i.unit || 'pcs', gst: +i.gst, hsn: i.hsn || '' }; }
+function normItem(i) { return { code: String(i.code), name: i.name, retail: +i.retail, wholesale: +i.wholesale, wholesale_unit: i.wholesale_unit || '', wholesale_qty: +i.wholesale_qty || 1, stock: i.stock == null ? null : +i.stock, unit: i.unit || 'pcs', gst: +i.gst, hsn: i.hsn || '' }; }
 function findItem(code) {
   code = String(code || '').trim();
   if (!code) return null;
@@ -180,9 +180,21 @@ const Scanner = (() => {
     stop();
     video = videoEl;
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser cannot open the camera.');
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+    const want = (deviceId) => ({ audio: false, video: { ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } }), width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } } });
+    let saved = LS.get('camId', null);
+    try { stream = await navigator.mediaDevices.getUserMedia(want(saved)); }
+    catch (e) { if (!saved) throw e; LS.del('camId'); saved = null; stream = await navigator.mediaDevices.getUserMedia(want(null)); }
+    if (!saved) {
+      // Phones have several back cameras; the wide-angle ones often can't focus up close. Use the main one (lowest number).
+      const main = await mainBackCamera();
+      const cur = stream.getVideoTracks()[0].getSettings().deviceId;
+      if (main && main !== cur) { stream.getTracks().forEach(t => t.stop()); try { stream = await navigator.mediaDevices.getUserMedia(want(main)); } catch (e) { stream = await navigator.mediaDevices.getUserMedia(want(null)); } }
+    }
     const tr = stream.getVideoTracks()[0];
     try { await tr.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+    // a little zoom lets the label sit at a distance the lens can focus, while still filling the frame
+    const z = zoomRange();
+    if (z) await setZoom(Math.min(z.max, LS.get('camZoom', 2)));
     video.srcObject = stream; video.muted = true; video.setAttribute('playsinline', '');
     try { await video.play(); } catch (e) {}
     running = true; schedule();
@@ -194,9 +206,38 @@ const Scanner = (() => {
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = null; if (video) video.srcObject = null; video = null;
   }
+  async function backCameras() {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const back = devs.filter(d => /back|rear|environment/i.test(d.label));
+    return back.length ? back : devs;
+  }
+  async function mainBackCamera() {
+    try {
+      const back = await backCameras();
+      if (back.length < 2) return null;
+      const num = d => { const m = /(\d+)/.exec(d.label); return m ? +m[1] : 99; };
+      return back.slice().sort((a, b) => num(a) - num(b))[0].deviceId;
+    } catch (e) { return null; }
+  }
+  async function nextCamera() {
+    const back = await backCameras();
+    if (back.length < 2) return false;
+    const cur = stream?.getVideoTracks()[0].getSettings().deviceId;
+    const i = back.findIndex(d => d.deviceId === cur);
+    LS.set('camId', back[(i + 1) % back.length].deviceId);
+    const v = video, cb = onCode; stop(); await start(v, cb);
+    return true;
+  }
+  function zoomRange() { try { const c = stream?.getVideoTracks()[0].getCapabilities?.(); return c && c.zoom && c.zoom.max > 1 ? c.zoom : null; } catch (e) { return null; } }
+  async function setZoom(z) { const r = zoomRange(); if (!r) return false; z = Math.max(r.min || 1, Math.min(r.max, z)); try { await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ zoom: z }] }); LS.set('camZoom', z); return z; } catch (e) { return false; } }
+  function getZoom() { try { return stream?.getVideoTracks()[0].getSettings().zoom || 1; } catch (e) { return 1; } }
+  async function focusNow() {
+    const tr = stream?.getVideoTracks()[0]; if (!tr) return;
+    try { await tr.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] }); setTimeout(() => tr.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}), 1200); } catch (e) {}
+  }
   function torchAvailable() { try { return !!stream?.getVideoTracks()[0].getCapabilities?.().torch; } catch (e) { return false; } }
   async function torch(on) { try { await stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: on }] }); return true; } catch (e) { return false; } }
-  return { start, stop, torch, torchAvailable, get active() { return !!stream; } };
+  return { start, stop, torch, torchAvailable, zoomRange, setZoom, getZoom, nextCamera, focusNow, backCameras, get active() { return !!stream; } };
 })();
 
 /* ---------------- shell ---------------- */
@@ -323,7 +364,7 @@ function buildBill() {
     <div class="cam" id="cam">
       <video id="camVideo" playsinline muted></video>
       <div class="aim"></div>
-      <div class="camtools"><button type="button" id="torchBtn" aria-pressed="false" hidden>Light</button></div>
+      <div class="camtools"><button type="button" id="zoomBtn" hidden>2×</button><button type="button" id="camBtn" hidden>Switch</button><button type="button" id="torchBtn" aria-pressed="false" hidden>Light</button></div>
       <div class="flash" id="flash">Point at a barcode or QR code</div>
       <div class="off" id="camOff" hidden><span id="camMsg">Camera is off</span><button type="button" class="btn" id="camOn">Start camera</button></div>
     </div>
@@ -335,6 +376,14 @@ function buildBill() {
     <ul class="lines" id="lines"></ul>
     <div class="paybar" id="paybar"></div>`;
   $('#camOn').addEventListener('click', startCam);
+  $('#zoomBtn').addEventListener('click', async () => {
+    const r = Scanner.zoomRange(); if (!r) return;
+    const steps = [1, 1.5, 2, 3, 4].filter(z => z <= r.max);
+    const cur = Scanner.getZoom(), next = steps.find(z => z > cur + 0.05) || steps[0];
+    const z = await Scanner.setZoom(next); if (z) $('#zoomBtn').textContent = (Math.round(z * 10) / 10) + '×';
+  });
+  $('#camBtn').addEventListener('click', async () => { $('#camBtn').disabled = true; try { await Scanner.nextCamera(); camTools(); toast('Switched camera'); } catch (e) { toast('Could not switch camera', true); } $('#camBtn').disabled = false; });
+  $('#camVideo').addEventListener('click', () => { Scanner.focusNow(); flash('hit', 'Focusing…'); });
   $('#torchBtn').addEventListener('click', async e => { const on = e.currentTarget.getAttribute('aria-pressed') !== 'true'; if (await Scanner.torch(on)) e.currentTarget.setAttribute('aria-pressed', on); });
   const find = $('#find');
   find.addEventListener('input', () => renderResults(find.value.trim()));
@@ -352,12 +401,19 @@ function buildBill() {
   $('#lines').addEventListener('change', onLineChange);
   renderCart();
 }
+async function camTools() {
+  if (!$('#torchBtn')) return;
+  $('#torchBtn').hidden = !Scanner.torchAvailable();
+  const r = Scanner.zoomRange();
+  $('#zoomBtn').hidden = !r; if (r) $('#zoomBtn').textContent = (Math.round(Scanner.getZoom() * 10) / 10) + '×';
+  try { $('#camBtn').hidden = (await Scanner.backCameras()).length < 2; } catch (e) {}
+}
 async function startCam() {
   const off = $('#camOff'); if (!off) return;
   try {
     await Scanner.start($('#camVideo'), onScan);
     off.hidden = true;
-    setTimeout(() => { $('#torchBtn').hidden = !Scanner.torchAvailable(); }, 600);
+    setTimeout(camTools, 600);
   } catch (e) {
     off.hidden = false;
     $('#camMsg').textContent = e && e.name === 'NotAllowedError' ? 'Camera permission is blocked. Allow camera for this site in your browser settings, then tap Start camera.' : 'Camera could not start. Tap to try again.';
@@ -382,20 +438,21 @@ function unknownCode(code) {
   openItemSheet({ code }, { fromBill: true });
 }
 function priceFor(it) { return S.cart.mode === 'wholesale' && it.wholesale > 0 ? it.wholesale : it.retail; }
+function unitFor(it) { return S.cart.mode === 'wholesale' && it.wholesale > 0 && it.wholesale_unit ? it.wholesale_unit : it.unit; }
 function addItem(it, qty = 1) {
   if (!it) return;
   const c = S.cart;
   let i = c.lines.findIndex(l => l.code === it.code);
   let l;
   if (i >= 0) { l = c.lines[i]; l.qty = r2(l.qty + qty); c.lines.splice(i, 1); c.lines.unshift(l); }
-  else { l = { code: it.code, name: it.name, unit: it.unit, gst: it.gst, price: priceFor(it), qty }; c.lines.unshift(l); }
+  else { l = { code: it.code, name: it.name, unit: unitFor(it), gst: it.gst, price: priceFor(it), qty }; c.lines.unshift(l); }
   saveCart(); renderCart(true);
-  beep(true); flash('hit', `✓ ${it.name} · ${l.qty} ${it.unit}`);
+  beep(true); flash('hit', `✓ ${it.name} · ${l.qty} ${l.unit}`);
   if (it.stock != null && it.stock - l.qty < 0) toast(`${it.name}: stock shows ${it.stock} left`, true);
 }
 function setMode(m) {
   S.cart.mode = m;
-  S.cart.lines.forEach(l => { const it = S.items.get(l.code); if (it) l.price = priceFor(it); });
+  S.cart.lines.forEach(l => { const it = S.items.get(l.code); if (it) { l.price = priceFor(it); l.unit = unitFor(it); } });
   saveCart(); renderCart();
 }
 function totals() {
@@ -527,7 +584,8 @@ function renderPendingBanner() {
 }
 setInterval(() => { if (S.token) syncPending(); }, 20000);
 window.addEventListener('online', () => S.token && syncPending());
-setInterval(() => { if (S.token && !document.hidden) loadItems(true); }, 120000);
+setInterval(() => { if (S.token && !document.hidden) loadItems(true); }, 20000);
+setInterval(() => { if (S.token && !document.hidden && S.view === 'bills' && !document.querySelector('.sheet')) renderBills(true); }, 30000);
 
 /* ---------------- WhatsApp text ---------------- */
 function billText(b) {

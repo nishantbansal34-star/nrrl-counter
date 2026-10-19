@@ -877,6 +877,8 @@ async function renderSettings() {
         <div style="display:flex;gap:8px"><input type="text" id="s_backup_extra" value="${esc(s.backup_extra)}" placeholder="Not set" readonly><button type="button" class="btn" id="pickExtra">Choose…</button>${s.backup_extra ? '<button type="button" class="btn" id="clearExtra">Remove</button>' : ''}</div></label>
       <div class="toolbar"><button type="button" class="btn accent" id="bkNow">Back up now</button><button type="button" class="btn" id="bkOpen">Open backup folder</button><button type="button" class="btn" id="dataOpen">Open data folder</button><button type="button" class="btn danger" id="bkRestore">Restore a backup…</button></div>
       <div class="confirmbar" id="rConfirm" hidden><span>Restoring replaces all current items and bills with the backup you choose. A copy of the current data is saved first.</span><button type="button" class="btn" id="rNo">Cancel</button><button type="button" class="btn danger" id="rYes">Choose backup</button></div></section>
+    <section class="card" id="linkCard"><h2>Phone app link (NRRL Counter)</h2>
+      <div id="linkBody"><p class="muted">Loading…</p></div></section>
     <section class="card" id="sheetCard"><h2>Google Sheet — see sales live on your phone</h2>
       <div id="sheetBody"><p class="muted">Loading…</p></div></section>
     <section class="card"><h2>Owner PIN</h2>
@@ -934,13 +936,47 @@ async function renderSettings() {
       toast('Backup restored'); renderSettings();
     } catch (err) { toast(err.message, { err: true }); }
   });
-  renderSheetCard();
+  renderSheetCard(); renderLinkCard();
   $('#pSave').addEventListener('click', async () => {
     try {
       const has = await rpc('auth.setPin', $('#pOld')?.value || '', $('#pNew').value);
       S.settings = await rpc('settings.get'); S.unlockedUntil = has ? Date.now() + 15 * 60e3 : 0;
       toast(has ? 'Owner PIN saved' : 'Owner PIN removed'); renderLock(); renderSettings();
     } catch (err) { $('#pErr').textContent = err.message; }
+  });
+}
+async function renderLinkCard() {
+  const el = $('#linkBody'); if (!el) return;
+  let st; try { st = await rpc('link.status'); } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  if (st.linked) {
+    el.innerHTML = `<p>Linked. This laptop and the phone app share one item list, stock and sales. Changes on either side show on the other within about 15 seconds.</p>
+      <p class="${st.lastError ? 'err' : 'muted'}">${st.lastError ? esc(st.lastError) + (st.pending ? ` · ${st.pending} changes waiting, will retry` : '') : (st.lastOk ? 'Last synced ' + esc(new Date(st.lastOk).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', second: '2-digit' })) : 'Linked') + (st.pending ? ` · ${st.pending} changes waiting` : ' · up to date')}</p>
+      <div class="toolbar"><button type="button" class="btn accent" id="lkNow">Sync now</button><button type="button" class="btn danger" id="lkOff">Unlink</button></div>
+      <div class="confirmbar" id="lkConfirm" hidden><span>Unlink this laptop from the phone app? Both keep their own data, but stop updating each other.</span><button type="button" class="btn" id="lkNo">Keep linked</button><button type="button" class="btn danger" id="lkYes">Unlink</button></div>`;
+    $('#lkNow').addEventListener('click', async () => { $('#lkNow').disabled = true; try { await rpc('link.now'); } catch (e) {} renderLinkCard(); });
+    $('#lkOff').addEventListener('click', () => { $('#lkConfirm').hidden = false; });
+    $('#lkNo').addEventListener('click', () => { $('#lkConfirm').hidden = true; });
+    $('#lkYes').addEventListener('click', async () => { await rpc('link.unlink'); toast('Unlinked from the phone app'); renderLinkCard(); });
+    return;
+  }
+  el.innerHTML = `<p>Link once, and bills, items and stock stay the same on this laptop and in the NRRL Counter phone app.</p>
+    <p class="muted small">On the first link, this laptop’s items and stock are copied to the phone app, and items only the phone app has are added here. Needs internet.</p>
+    <div class="form2"><label class="f"><span>Owner</span><select id="lkOwner"><option>Loading…</option></select></label>
+      <label class="f"><span>Owner PIN (phone app)</span><input type="password" id="lkPin" inputmode="numeric" maxlength="8"></label></div>
+    <div class="toolbar"><button type="button" class="btn accent" id="lkGo">Link with phone app</button><span class="muted small" id="lkProg"></span></div>
+    <p class="err" id="lkErr"></p>`;
+  try {
+    const owners = await rpc('link.owners');
+    $('#lkOwner').innerHTML = owners.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('') || '<option value="">No owner found</option>';
+  } catch (e) { $('#lkErr').textContent = e.message; }
+  $('#lkGo').addEventListener('click', async () => {
+    $('#lkErr').textContent = ''; $('#lkGo').disabled = true;
+    try {
+      const r = await rpc('link.connect', $('#lkOwner').value, $('#lkPin').value);
+      await reloadItems();
+      toast(`Linked. Sent ${r.items} items and ${r.bills} bills to the phone app.`);
+      renderLinkCard();
+    } catch (e) { $('#lkErr').textContent = e.message; $('#lkGo').disabled = false; $('#lkProg').textContent = ''; }
   });
 }
 async function renderSheetCard() {
@@ -985,6 +1021,13 @@ async function renderBackupState() {
 }
 
 /* ================= start ================= */
+window.api.on && window.api.on('link-progress', msg => { const p = $('#lkProg'); if (p) p.textContent = msg; });
+window.api.on && window.api.on('data-changed', async ch => {
+  await reloadItems().catch(() => {});
+  if (S.view === 'items') renderItemRows();
+  if (S.view === 'sales' && ch.bills) renderSales();
+  if (ch.bills) toast(`${ch.bills} new bill${ch.bills === 1 ? '' : 's'} from the phone app`);
+});
 async function init() {
   try {
     S.settings = await rpc('settings.get');

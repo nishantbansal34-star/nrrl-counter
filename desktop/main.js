@@ -2,6 +2,7 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
 const { createSync } = require('./sync');
+const { createLink } = require('./link');
 const path = require('path');
 const fs = require('fs');
 const { Store } = require('./db');
@@ -12,6 +13,7 @@ if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
 let win = null, store = null, dirty = false, quitting = false;
 const sync = createSync(() => store);
+const link = createLink(() => store, changes => { if (win && !win.isDestroyed()) win.webContents.send('data-changed', changes); });
 const dataDir = () => path.join(app.getPath('documents'), 'NRRL Billing');
 const backupDir = () => path.join(dataDir(), 'Backups');
 const dbFile = () => path.join(dataDir(), 'nrrl-billing.db');
@@ -103,14 +105,15 @@ function setupIPC() {
     printReceipt: P.printReceipt,
     printLabels: P.printLabels,
     listPrinters, backupNow, backupList, restore, saveText, openText, chooseExtraFolder,
-    sync, copy: text => { clipboard.writeText(String(text)); return true; },
+    sync, link, progress: msg => { if (win && !win.isDestroyed()) win.webContents.send('link-progress', msg); },
+    copy: text => { clipboard.writeText(String(text)); return true; },
   });
   ipcMain.handle('rpc', async (e, method, args) => {
     const fn = H[method];
     if (!fn) return { ok: false, error: 'Unknown action: ' + method };
     try {
       const data = await fn(...(Array.isArray(args) ? args : []));
-      if (WRITES.has(method)) { dirty = true; if (method.startsWith('items.')) store.setSetting('items_dirty', '1'); sync.soon(); }
+      if (WRITES.has(method)) { dirty = true; if (method.startsWith('items.')) store.setSetting('items_dirty', '1'); sync.soon(); link.soon(); }
       return { ok: true, data };
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
@@ -149,6 +152,7 @@ app.whenReady().then(async () => {
   setupIPC();
   createWindow();
   sync.start();
+  link.start();
   // backup at start if the last one is older than 6 hours, then every 30 minutes when something changed
   const last = Date.parse(store.getSetting('last_backup') || '') || 0;
   if (Date.now() - last > 6 * 3600e3) backupNow('start').catch(() => {});
