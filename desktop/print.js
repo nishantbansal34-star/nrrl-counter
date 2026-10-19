@@ -216,6 +216,7 @@ async function printReceipt(bill, s, opts) {
   await printHTML(receiptHTML(bill, s, opts), { deviceName: s.printer, widthMm: paper, copies: opts && opts.duplicate ? 1 : s.copies });
 }
 async function printLabels(entries, s) {
+  if (s.label_mode === 'tspl') return printLabelsDirect(entries, s);
   const { pageW, h } = labelSize(s);
   const { html, count } = await buildLabels(entries, s);
   await printHTML(html, { deviceName: s.label_printer || s.printer, widthMm: pageW, heightMm: h, exact: true });
@@ -223,3 +224,103 @@ async function printLabels(entries, s) {
 }
 
 module.exports = { receiptHTML, labelsHTML, buildLabels, barcodeImage, labelSize, sampleBill, printReceipt, printLabels, printHTML };
+
+/* ---------- Direct label printing (TSPL) ----------
+   Most barcode label printers (TSC, TVS, Xprinter, Gainscha, iDPRT…) understand TSPL commands.
+   Sending commands lets the printer draw each barcode itself at full sharpness, with no
+   Windows driver resizing a picture of it. */
+function tsplText(t) { return String(t ?? '').replace(/₹/g, 'Rs.').replace(/[^\x20-\x7e]/g, '').replace(/"/g, "'"); }
+async function tsplLabels(entries, s) {
+  const dpi = String(s.label_dpi) === '300' ? 300 : 203, dpm = dpi / 25.4;
+  const { w, h, across, gap, shift, pageW } = labelSize(s);
+  const vgap = s.label_vgap === '' || s.label_vgap == null || !isFinite(+s.label_vgap) ? 2 : Math.max(0, +s.label_vgap);
+  const D = mm => Math.round(mm * dpm);
+  const list = [], bcs = {};
+  for (const { item, count } of entries) {
+    const n = Math.max(0, Math.min(1000, parseInt(count, 10) || 0));
+    if (!n) continue;
+    if (!bcs[item.code]) bcs[item.code] = await barcodeImage(item.code, s);
+    for (let i = 0; i < n; i++) list.push(item);
+  }
+  if (!list.length) throw new Error('No labels to print.');
+  const TYPE = { ean13: 'EAN13', upca: 'UPCA', ean8: 'EAN8', code128: '128' };
+  const out = [
+    `SIZE ${pageW.toFixed(1)} mm,${h.toFixed(1)} mm`, `GAP ${vgap} mm,0 mm`, `DIRECTION ${s.label_flip === '1' ? 0 : 1}`,
+    'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', `DENSITY ${Math.max(0, Math.min(15, parseInt(s.label_density, 10) || 10))}`, 'SPEED 3',
+  ];
+  const wD = D(w), hD = D(h), pad = D(1.5);
+  for (let r = 0; r < list.length; r += across) {
+    out.push('CLS');
+    list.slice(r, r + across).forEach((it, i) => {
+      const x0 = D(shift + i * (w + gap)), bc = bcs[it.code];
+      const kind = symbology(it.code);
+      const dataModules = kind === 'code128' ? bc.modules - 20 : ({ ean13: 95, upca: 95, ean8: 67 })[kind];
+      const bw = dataModules * bc.dots;
+      const nameMax = Math.max(4, Math.floor((wD - 2 * pad) / 12));
+      const name = tsplText(it.name).slice(0, nameMax);
+      const priceTxt = s.label_price !== '0' ? 'Rs.' + n2(it.retail).replace(/\.00$/, '') : '';
+      const topY = D(1), nameH = 20, botH = 24, botY = hD - D(0.8) - botH;
+      const bcY = topY + nameH + D(0.8), bcH = Math.max(D(5), botY - D(0.8) - bcY);
+      out.push(`TEXT ${x0 + pad},${topY},"2",0,1,1,"${name}"`);
+      out.push(`BARCODE ${x0 + Math.max(0, Math.round((wD - bw) / 2))},${bcY},"${TYPE[kind]}",${bcH},0,0,${bc.dots},${bc.dots},"${tsplText(it.code)}"`);
+      out.push(`TEXT ${x0 + pad},${botY + 8},"1",0,1,1,"${tsplText(it.code).slice(0, Math.floor((wD - 2 * pad) / 8) - priceTxt.length * 2)}"`);
+      if (priceTxt) out.push(`TEXT ${x0 + wD - pad - priceTxt.length * 16},${botY},"3",0,1,1,"${priceTxt}"`);
+    });
+    out.push('PRINT 1,1');
+  }
+  return { data: out.join('\r\n') + '\r\n', count: list.length };
+}
+/* Send bytes straight to a Windows printer queue (RAW), using the Windows print spooler. */
+function sendRaw(printerName, text) {
+  const { execFile } = require('child_process');
+  const fs = require('fs'), os = require('os'), path = require('path');
+  if (!printerName) return Promise.reject(new Error('Choose the label printer in Settings first.'));
+  const file = path.join(os.tmpdir(), `nrrl-labels-${Date.now()}.prn`);
+  fs.writeFileSync(file, Buffer.from(text, 'latin1'));
+  const ps = `$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public class NrrlRaw {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public class DOCINFO { public string pDocName; public string pOutputFile; public string pDataType; }
+  [DllImport("winspool.drv", EntryPoint="OpenPrinterW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool OpenPrinter(string n, out IntPtr h, IntPtr d);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool ClosePrinter(IntPtr h);
+  [DllImport("winspool.drv", EntryPoint="StartDocPrinterW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern int StartDocPrinter(IntPtr h, int level, [In] DOCINFO di);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool EndDocPrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool StartPagePrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool EndPagePrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool WritePrinter(IntPtr h, byte[] b, int c, out int w);
+  public static void Send(string printer, byte[] data) {
+    IntPtr h;
+    if (!OpenPrinter(printer, out h, IntPtr.Zero)) throw new Exception("Cannot open printer '" + printer + "' (Windows error " + Marshal.GetLastWin32Error() + ")");
+    try {
+      DOCINFO di = new DOCINFO(); di.pDocName = "NRRL labels"; di.pDataType = "RAW";
+      if (StartDocPrinter(h, 1, di) == 0) throw new Exception("Printer would not start the job (Windows error " + Marshal.GetLastWin32Error() + ")");
+      StartPagePrinter(h);
+      int written;
+      if (!WritePrinter(h, data, data.Length, out written)) throw new Exception("Could not send to printer (Windows error " + Marshal.GetLastWin32Error() + ")");
+      EndPagePrinter(h); EndDocPrinter(h);
+    } finally { ClosePrinter(h); }
+  }
+}
+"@
+[NrrlRaw]::Send($env:NRRL_PRINTER, [System.IO.File]::ReadAllBytes($env:NRRL_FILE))`;
+  const enc = Buffer.from(ps, 'utf16le').toString('base64');
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
+      { env: { ...process.env, NRRL_PRINTER: printerName, NRRL_FILE: file }, windowsHide: true, timeout: 30000 },
+      (err, stdout, stderr) => {
+        try { fs.unlinkSync(file); } catch (e) {}
+        if (err) {
+          const msg = String(stderr || err.message).split(/\r?\n/).find(l => /Cannot open|would not|Could not|Exception/.test(l)) || 'The label printer did not accept the job.';
+          reject(new Error(msg.replace(/^.*?:\s*"?/, '').replace(/"\s*$/, '').trim()));
+        } else resolve();
+      });
+  });
+}
+async function printLabelsDirect(entries, s) {
+  const { data, count } = await tsplLabels(entries, s);
+  await sendRaw(s.label_printer || s.printer, data);
+  return count;
+}
+module.exports.tsplLabels = tsplLabels;
+module.exports.printLabelsDirect = printLabelsDirect;

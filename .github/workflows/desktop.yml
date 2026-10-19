@@ -46,7 +46,11 @@ jobs:
               const b = s.saveBill({ lines: [{ code: 'T1', qty: 2 }] });
               require('./print').barcodeImage('NR10001', s.getSettings()).then(bc => {
                 console.log('SMOKE OK total=' + b.total + ' bar=' + bc.dots);
-                app.exit(b.total === 20 && bc.dots >= 2 ? 0 : 1);
+                if (!(b.total === 20 && bc.dots >= 2)) return app.exit(1);
+                // the direct label path must reach the Windows spooler: a missing printer must give a clear error
+                return require('./print').printLabelsDirect([{ item: { code: 'NR10001', name: 'Test', retail: 10 }, count: 1 }], { ...s.getSettings(), label_printer: 'No Such Printer 123' })
+                  .then(() => { console.error('RAW: unexpected success'); app.exit(1); })
+                  .catch(e => { console.log('RAW error text: ' + e.message); app.exit(/Cannot open printer/.test(e.message) ? 0 : 1); });
               }).catch(e => { console.error('SMOKE FAIL', e); app.exit(1); });
             } catch (e) { console.error('SMOKE FAIL', e); app.exit(1); }
           });

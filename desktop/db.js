@@ -37,6 +37,10 @@ const DEFAULTS = {
   label_price: '1',
   label_dpi: '203',
   label_across: '1',
+  label_mode: 'windows',
+  label_vgap: '2',
+  label_flip: '0',
+  label_density: '10',
   label_gap: '2',
   label_shift: '0',
   label_bar: '',
@@ -47,7 +51,7 @@ const DEFAULTS = {
   next_code: '10001',
 };
 const EDITABLE = new Set(['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'printer', 'paper', 'print_margin', 'font_size',
-  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'low_stock', 'backup_extra']);
+  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'low_stock', 'backup_extra']);
 
 class Store {
   constructor(file) {

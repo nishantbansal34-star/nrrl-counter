@@ -832,12 +832,16 @@ async function renderSettings() {
       <p class="muted">For items without a barcode: click <b>Make code</b> on the item, then print labels and stick them on the packet or bin.</p>
       <div class="form2">
         <label class="f w"><span>Label printer</span><select id="s_label_printer">${opt(s.label_printer).replace('Windows default printer', 'Same as receipt printer')}</select></label>
+        <label class="f w"><span>How to print labels</span><select id="s_label_mode"><option value="tspl"${s.label_mode === 'tspl' ? ' selected' : ''}>Send commands to the label printer (sharpest — TSC, TVS, Xprinter, most barcode printers)</option><option value="windows"${s.label_mode !== 'tspl' ? ' selected' : ''}>Through the Windows printer driver (any printer)</option></select></label>
         <label class="f"><span>Labels across the roll</span><select id="s_label_across">${[1, 2, 3, 4].map(n => `<option value="${n}"${(+s.label_across || 1) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
         <label class="f"><span>Gap between labels (mm)</span><input type="number" step="0.5" id="s_label_gap" value="${esc(s.label_gap)}"></label>
         <label class="f"><span>One label width (mm)</span><input type="number" step="0.5" id="s_label_w" value="${esc(s.label_w)}"></label>
         <label class="f"><span>One label height (mm)</span><input type="number" step="0.5" id="s_label_h" value="${esc(s.label_h)}"></label>
         <label class="f"><span>Printer resolution</span><select id="s_label_dpi"><option value="203"${s.label_dpi !== '300' ? ' selected' : ''}>203 dpi (most printers)</option><option value="300"${s.label_dpi === '300' ? ' selected' : ''}>300 dpi</option></select></label>
         <label class="f"><span>Bar thickness</span><select id="s_label_bar">${[['', 'Automatic'], ['2', 'Thin'], ['3', 'Medium'], ['4', 'Thick']].map(([v, l]) => `<option value="${v}"${(s.label_bar || '') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Gap between rows (mm)</span><input type="number" step="0.5" id="s_label_vgap" value="${esc(s.label_vgap)}" placeholder="2"></label>
+        <label class="f"><span>Print darkness (0–15)</span><input type="number" min="0" max="15" id="s_label_density" value="${esc(s.label_density)}" placeholder="10"></label>
+        <label class="f" style="flex-direction:row;align-items:center;gap:8px;padding-top:18px"><input type="checkbox" id="s_label_flip" ${s.label_flip === '1' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Print upside down</span></label>
         <label class="f"><span>Move print right (mm)</span><input type="number" step="0.5" id="s_label_shift" value="${esc(s.label_shift)}" placeholder="0"></label>
         <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_label_price" ${s.label_price !== '0' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Show price on label</span></label>
         <label class="f"><span>Low-stock alert at (default)</span><input type="number" id="s_low_stock" value="${esc(s.low_stock)}"></label>
@@ -863,10 +867,10 @@ async function renderSettings() {
     </div>
     <div class="toolbar" style="position:sticky;bottom:0;padding:14px 0 0;background:var(--bg);margin-top:14px"><button type="button" class="btn primary big" id="sSave" style="min-width:220px">Save settings</button><span class="muted small" id="sMsg"></span><span class="muted small" style="margin-left:auto">NRRL Billing v${esc(info.version)}</span></div>
   </div>`;
-  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift'];
+  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density'];
   const collect = () => {
     const o = {}; for (const k of keys) o[k] = $('#s_' + k).value;
-    o.label_price = $('#s_label_price').checked ? '1' : '0';
+    o.label_price = $('#s_label_price').checked ? '1' : '0'; o.label_flip = $('#s_label_flip').checked ? '1' : '0';
     return o;
   };
   const save = async quiet => {
