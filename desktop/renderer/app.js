@@ -877,6 +877,8 @@ async function renderSettings() {
         <div style="display:flex;gap:8px"><input type="text" id="s_backup_extra" value="${esc(s.backup_extra)}" placeholder="Not set" readonly><button type="button" class="btn" id="pickExtra">Choose…</button>${s.backup_extra ? '<button type="button" class="btn" id="clearExtra">Remove</button>' : ''}</div></label>
       <div class="toolbar"><button type="button" class="btn accent" id="bkNow">Back up now</button><button type="button" class="btn" id="bkOpen">Open backup folder</button><button type="button" class="btn" id="dataOpen">Open data folder</button><button type="button" class="btn danger" id="bkRestore">Restore a backup…</button></div>
       <div class="confirmbar" id="rConfirm" hidden><span>Restoring replaces all current items and bills with the backup you choose. A copy of the current data is saved first.</span><button type="button" class="btn" id="rNo">Cancel</button><button type="button" class="btn danger" id="rYes">Choose backup</button></div></section>
+    <section class="card" id="sheetCard"><h2>Google Sheet — see sales live on your phone</h2>
+      <div id="sheetBody"><p class="muted">Loading…</p></div></section>
     <section class="card"><h2>Owner PIN</h2>
       <p class="muted">With a PIN set, staff can bill and add new items, but these need the PIN: changing prices or rates, editing or removing items, adding stock, cancelling bills, sales older than today, and Settings.</p>
       <div class="form2">
@@ -932,12 +934,47 @@ async function renderSettings() {
       toast('Backup restored'); renderSettings();
     } catch (err) { toast(err.message, { err: true }); }
   });
+  renderSheetCard();
   $('#pSave').addEventListener('click', async () => {
     try {
       const has = await rpc('auth.setPin', $('#pOld')?.value || '', $('#pNew').value);
       S.settings = await rpc('settings.get'); S.unlockedUntil = has ? Date.now() + 15 * 60e3 : 0;
       toast(has ? 'Owner PIN saved' : 'Owner PIN removed'); renderLock(); renderSettings();
     } catch (err) { $('#pErr').textContent = err.message; }
+  });
+}
+async function renderSheetCard() {
+  const el = $('#sheetBody'); if (!el) return;
+  let st; try { st = await rpc('sync.status'); } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  if (st.url) {
+    el.innerHTML = `<p>Connected. Every bill appears in your sheet within about 15 seconds, and the item list with stock updates every minute. Open the sheet in the Google Sheets app on your phone to watch it.</p>
+      <p class="${st.lastError ? 'err' : 'muted'}">${st.lastError ? 'Last try failed: ' + esc(st.lastError) + (st.pending ? ` · ${st.pending} waiting, will retry` : '') : (st.lastOk ? 'Last sent ' + esc(new Date(st.lastOk).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })) : 'Connected') + (st.pending ? ` · ${st.pending} waiting to send` : ' · all sent')}</p>
+      <div class="toolbar"><button type="button" class="btn accent" id="shNow">Send now</button><button type="button" class="btn danger" id="shOff">Disconnect</button></div>
+      <div class="confirmbar" id="shConfirm" hidden><span>Stop sending to the Google Sheet? What’s already in the sheet stays there.</span><button type="button" class="btn" id="shNo">Keep</button><button type="button" class="btn danger" id="shYes">Disconnect</button></div>`;
+    $('#shNow').addEventListener('click', async () => { $('#shNow').disabled = true; try { await rpc('sync.now'); } catch (e) {} renderSheetCard(); });
+    $('#shOff').addEventListener('click', () => { $('#shConfirm').hidden = false; });
+    $('#shNo').addEventListener('click', () => { $('#shConfirm').hidden = true; });
+    $('#shYes').addEventListener('click', async () => { await rpc('sync.disconnect'); toast('Disconnected from Google Sheet'); renderSheetCard(); });
+    return;
+  }
+  el.innerHTML = `<p class="muted">One-time setup, about 5 minutes. Do it on this laptop.</p>
+    <ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px">
+      <li><button type="button" class="btn" id="shCopy">Copy setup script</button></li>
+      <li>Open <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> (a new Google Sheet). Name it <b>NRRL Sales</b>.</li>
+      <li>In the sheet: <b>Extensions → Apps Script</b>. Delete what’s there, paste (Ctrl+V), click <b>Save</b>.</li>
+      <li>Click <b>Deploy → New deployment</b> → gear icon → <b>Web app</b>. Set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>. Click <b>Deploy</b>, then <b>Authorize access</b>. If Google says the app isn’t verified, click <b>Advanced → Go to … (unsafe) → Allow</b>. It’s your own script.</li>
+      <li>Copy the <b>Web app URL</b> (ends with /exec) and paste it here:</li>
+    </ol>
+    <div style="display:flex;gap:8px"><input type="text" id="shUrl" placeholder="https://script.google.com/macros/s/…/exec" spellcheck="false"><button type="button" class="btn accent" id="shGo">Connect</button></div>
+    <p class="err" id="shErr"></p>`;
+  $('#shCopy').addEventListener('click', async () => {
+    try { await rpc('clipboard.write', await rpc('sync.script')); toast('Setup script copied. Paste it into Apps Script.'); $('#shCopy').textContent = 'Copied ✓'; }
+    catch (e) { toast(e.message, { err: true }); }
+  });
+  $('#shGo').addEventListener('click', async () => {
+    $('#shErr').textContent = ''; $('#shGo').disabled = true; $('#shGo').textContent = 'Checking…';
+    try { const r = await rpc('sync.connect', $('#shUrl').value); toast(`Connected. Sending ${r.queued} past bills to the sheet.`); renderSheetCard(); }
+    catch (e) { $('#shErr').textContent = e.message; $('#shGo').disabled = false; $('#shGo').textContent = 'Connect'; }
   });
 }
 async function renderBackupState() {

@@ -2,7 +2,7 @@
 'use strict';
 const P = require('./print');
 
-const WRITES = new Set(['items.save', 'items.remove', 'items.import', 'items.stockIn', 'items.nextCode', 'bills.save', 'bills.cancel',
+const WRITES = new Set(['sync.connect', 'items.save', 'items.remove', 'items.import', 'items.stockIn', 'items.nextCode', 'bills.save', 'bills.cancel',
   'settings.save', 'auth.setPin']);
 
 function makeHandlers(ctx) {
@@ -69,6 +69,13 @@ function makeHandlers(ctx) {
     'settings.save': obj => st().saveSettings(obj),
     'auth.check': pin => st().checkPin(pin),
     'auth.setPin': (oldPin, newPin) => st().setPin(oldPin, newPin),
+
+    'sync.status': () => ctx.sync.status(),
+    'sync.script': () => ctx.sync.script(),
+    'sync.connect': url => ctx.sync.test(url),
+    'sync.now': async () => { await ctx.sync.tick(); return ctx.sync.status(); },
+    'sync.disconnect': () => ctx.sync.disconnect(),
+    'clipboard.write': text => ctx.copy(text),
 
     'backup.now': () => ctx.backupNow('manual'),
     'backup.list': () => ctx.backupList(),

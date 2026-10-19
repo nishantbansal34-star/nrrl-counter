@@ -38,6 +38,8 @@ const DEFAULTS = {
   label_dpi: '203',
   label_across: '1',
   label_mode: 'windows',
+  sheet_url: '',
+  sheet_key: '',
   label_wcode: '1',
   wcode_prefix: 'NRRL',
   wcode_mult: '2',
@@ -98,6 +100,7 @@ class Store {
       create table if not exists stock_moves(
         id integer primary key autoincrement, code text not null, qty real not null, kind text not null, ref text, at text not null);
       create table if not exists settings(key text primary key, value text);
+      create table if not exists sync_queue(id integer primary key autoincrement, kind text not null, payload text not null, created_at text not null, tries integer not null default 0, last_error text);
     `);
     const addCol = (t, c, def) => { if (!this.db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) this.db.exec(`alter table ${t} add column ${c} ${def}`); };
     addCol('items', 'wholesale_unit', "text not null default ''");
@@ -295,7 +298,9 @@ class Store {
       }
       return bid;
     })();
-    return this.getBill(id);
+    const saved = this.getBill(id);
+    this.enqueue('bill', saved);
+    return saved;
   }
   getBill(id) {
     const b = this.db.prepare('select * from bills where id=?').get(id);
@@ -326,6 +331,7 @@ class Store {
       }
       this.db.prepare('update bills set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id);
     })();
+    this.enqueue('cancel', { bill_no: b.bill_no });
     return this.getBill(id);
   }
   summary(from, to) {
@@ -342,6 +348,24 @@ class Store {
     return this.db.prepare(`select l.code, max(l.name) name, l.unit unit, round(sum(l.qty),2) qty, round(sum(l.amount),2) amount, count(distinct l.bill_id) bills
       from bill_lines l join bills b on b.id=l.bill_id
       where b.cancelled=0 and b.created_at>=? and b.created_at<? group by l.code, l.unit order by amount desc limit 2000`).all(a, b);
+  }
+  /* ---------- Google Sheet sync queue ---------- */
+  syncOn() { return !!this.getSetting('sheet_url'); }
+  enqueue(kind, payload) {
+    if (kind !== 'items') this.setSetting('items_dirty', '1');
+    if (!this.syncOn()) return;
+    this.db.prepare('insert into sync_queue(kind,payload,created_at) values(?,?,?)').run(kind, JSON.stringify(payload), nowLocal());
+  }
+  queuePeek(n) { return this.db.prepare('select id,kind,payload,tries from sync_queue order by id limit ?').all(n); }
+  queueDone(ids) { const d = this.db.prepare('delete from sync_queue where id=?'); this.db.transaction(() => ids.forEach(i => d.run(i)))(); }
+  queueFail(ids, err) { const u = this.db.prepare('update sync_queue set tries=tries+1, last_error=? where id=?'); this.db.transaction(() => ids.forEach(i => u.run(String(err).slice(0, 300), i)))(); }
+  queueCount() { return this.db.prepare('select count(*) n from sync_queue').get().n; }
+  queueAllBills() {
+    const ids = this.db.prepare('select id from bills order by id').all().map(r => r.id);
+    const ins = this.db.prepare('insert into sync_queue(kind,payload,created_at) values(?,?,?)');
+    this.db.transaction(() => { for (const id of ids) ins.run('bill', JSON.stringify(this.getBill(id)), nowLocal()); })();
+    this.setSetting('items_dirty', '1');
+    return ids.length;
   }
   counts() {
     return this.db.prepare(`select (select count(*) from items where active=1) items, (select count(*) from bills) bills`).get();
