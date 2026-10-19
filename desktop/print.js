@@ -130,19 +130,30 @@ async function barcodeImage(code, s) {
     dots = 1;
     for (let d = 6; d >= 1; d--) if (modules * d / dpm <= avail && d / dpm <= 0.42) { dots = d; break; }
   }
-  const png = await bwip.toBuffer({ bcid, text: String(code), scale: dots, height: 8, includetext: false, paddingwidth: quiet, paddingheight: 0 });
+  // bars in module units: [left, width]. Drawn as solid black rectangles (never a resized picture,
+  // which some printer drivers turn into grey dots).
+  const bars = [];
+  for (const m of probe.matchAll(/<path[^>]*stroke-width="([\d.]+)"[^>]*d="([^"]+)"/g)) {
+    const bw = +m[1];
+    for (const x of m[2].matchAll(/M([\d.]+) /g)) bars.push([Math.round((+x[1] - bw / 2) * 2) / 2, bw]);
+  }
   const widthMm = modules * dots / dpm;
   // longest code that would still scan on this label
   const maxModules = Math.floor(avail * dpm / minDots);
-  return { src: 'data:image/png;base64,' + png.toString('base64'), widthMm, moduleMm: dots / dpm, dots, fits: dots >= minDots && widthMm <= w, maxModules, modules };
+  return { bars, dpm, widthMm, moduleMm: dots / dpm, dots, fits: dots >= minDots && widthMm <= w, maxModules, modules };
 }
 
-function labelCell(item, s, bc) {
+function labelCell(item, s, bc, xMm) {
   const showPrice = s.label_price !== '0';
-  if (!item) return '<div class="lab"></div>';
-  return `<div class="lab">
+  if (!item) return `<div class="lab" style="left:${xMm.toFixed(3)}mm"></div>`;
+  const { w } = labelSize(s);
+  // put the barcode's left edge exactly on a printer dot, counted from the edge of the roll
+  const absLeft = Math.round((xMm + (w - bc.widthMm) / 2) * bc.dpm) / bc.dpm;
+  const vw = Math.round(bc.widthMm * bc.dpm);
+  const rects = bc.bars.map(([x, bw]) => `<rect x="${x * bc.dots}" y="0" width="${bw * bc.dots}" height="100"/>`).join('');
+  return `<div class="lab" style="left:${xMm.toFixed(3)}mm">
       <div class="nm">${esc(item.name)}</div>
-      <div class="bc"><img src="${bc.src}" style="width:${bc.widthMm.toFixed(3)}mm" alt=""></div>
+      <div class="bc"><svg class="bars" style="left:${(absLeft - xMm).toFixed(4)}mm;width:${bc.widthMm.toFixed(4)}mm" viewBox="0 0 ${vw} 100" preserveAspectRatio="none" shape-rendering="crispEdges" fill="#000">${rects}</svg></div>
       <div class="row"><span class="code">${esc(item.code)}</span>${showPrice ? `<span class="pr">₹${n2(item.retail).replace(/\.00$/, '')}</span>` : ''}</div>
     </div>`;
 }
@@ -156,17 +167,16 @@ function labelsHTML(list, s, bcs) {
     @page{size:${pageW}mm ${h}mm;margin:0}
     *{box-sizing:border-box}
     html,body{margin:0;padding:0;background:#fff;color:#000;font-family:"Segoe UI",Arial,sans-serif}
-    .pg{width:${pageW}mm;height:${h}mm;display:flex;gap:${gap}mm;overflow:hidden;page-break-after:always;break-after:page}
+    .pg{position:relative;width:${pageW}mm;height:${h}mm;overflow:hidden;page-break-after:always;break-after:page}
     .pg:last-child{page-break-after:auto;break-after:auto}
-    .in{display:flex;gap:${gap}mm;transform:translateX(${shift}mm)}
-    .lab{width:${w}mm;height:${h}mm;flex:none;padding:${small ? .6 : 1}mm 0 ${small ? .4 : .8}mm;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
+    .lab{position:absolute;top:0;width:${w}mm;height:${h}mm;padding:${small ? .6 : 1}mm 0 ${small ? .4 : .8}mm;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
     .nm{font-size:${small ? 6.5 : 8}pt;font-weight:700;line-height:1.1;max-height:1.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 1.5mm}
-    .bc{flex:1;min-height:0;display:flex;justify-content:center;align-items:stretch;padding:.4mm 0}
-    .bc img{height:100%;max-width:none;image-rendering:pixelated;image-rendering:crisp-edges}
+    .bc{flex:1;min-height:0;position:relative;margin:.4mm 0}
+    .bars{position:absolute;top:0;height:100%}
     .row{display:flex;justify-content:space-between;align-items:baseline;gap:1mm;padding:0 1.5mm;white-space:nowrap}
     .code{font-size:${small ? 5.5 : 6.5}pt;font-family:Consolas,monospace;overflow:hidden;text-overflow:ellipsis}
     .pr{font-size:${small ? 8.5 : 11}pt;font-weight:800}
-  </style></head><body>${rows.map(r => `<div class="pg"><div class="in">${r.map(it => labelCell(it, s, it && bcs[it.code])).join('')}${'<div class="lab"></div>'.repeat(across - r.length)}</div></div>`).join('')}</body></html>`;
+  </style></head><body>${rows.map(r => `<div class="pg">${r.map((it, i) => labelCell(it, s, it && bcs[it.code], shift + i * (w + gap))).join('')}</div>`).join('')}</body></html>`;
 }
 async function buildLabels(entries, s) {
   const list = [], bcs = {};
