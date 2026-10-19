@@ -172,3 +172,5 @@ table.grid tr.cx td { color: var(--muted); text-decoration: line-through; }
 .toast { background: var(--fg); color: var(--bg); padding: 11px 14px; border-radius: 10px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,.25); display: flex; gap: 10px; align-items: center; }
 .toast.err { background: var(--bad); color: #fff; }
 .toast button { margin-left: auto; background: rgba(255,255,255,.18); border: 0; color: inherit; border-radius: 6px; padding: 4px 10px; font-weight: 700; }
+
+.warn { color: var(--warn); }

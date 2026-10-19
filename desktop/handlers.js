@@ -40,15 +40,28 @@ function makeHandlers(ctx) {
       return P.receiptHTML(b, settings(), { duplicate: !!duplicate });
     },
     'print.test': async () => { await ctx.printReceipt(P.sampleBill(), settings(), {}); return true; },
-    'print.labels': async (code, count) => {
-      const it = st().getItem(code);
-      if (!it) throw new Error('Item not found.');
-      await ctx.printLabels(it, count, settings());
-      return true;
+    'print.labels': async (list) => {
+      // list: [{code, count}]
+      const entries = (Array.isArray(list) ? list : []).map(e => ({ item: st().getItem(e.code), count: e.count }));
+      const missing = entries.find(e => !e.item);
+      if (missing) throw new Error('An item on the label list no longer exists. Remove it and try again.');
+      return ctx.printLabels(entries, settings());
     },
-    'print.labelPreview': code => {
-      const it = st().getItem(code) || { code: code || 'NR10001', name: 'Sample item name', retail: 99 };
-      return P.labelsHTML(it, 1, settings(), P.barcodeSVG(it.code));
+    'print.labelPreview': async code => {
+      const s = settings();
+      const it = (code && st().getItem(code)) || { code: 'NR10001', name: 'Sample item name', retail: 99 };
+      const { across } = P.labelSize(s);
+      return (await P.buildLabels([{ item: it, count: across }], s)).html;
+    },
+    'print.testLabel': async () => {
+      const first = st().allItems()[0];
+      const it = first ? st().getItem(first.code) : { code: 'NR10001', name: 'Test label', retail: 99 };
+      return ctx.printLabels([{ item: it, count: P.labelSize(settings()).across }], settings());
+    },
+    'print.labelInfo': async code => {
+      const s = settings();
+      const bc = await P.barcodeImage(code || 'NR10001', s);
+      return { widthMm: bc.widthMm, moduleMm: bc.moduleMm, dots: bc.dots, fits: bc.fits, ...P.labelSize(s) };
     },
     'printers.list': () => ctx.listPrinters(),
 

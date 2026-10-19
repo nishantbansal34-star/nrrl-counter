@@ -466,24 +466,81 @@ async function openItemForm(it, opts = {}) {
   $('#fSaveLabel', m)?.addEventListener('click', () => submit(true));
 }
 
-function openLabels(it) {
+/* ---------- barcode labels ---------- */
+S.labelQ = LS.get('labelQ', []);
+const saveQ = () => { LS.set('labelQ', S.labelQ); const b = $('#qBtn'); if (b) b.textContent = `Label list (${S.labelQ.length})`; };
+function rowsText(n, across) {
+  if (across <= 1) return `${n} label${n === 1 ? '' : 's'}`;
+  const rows = Math.ceil(n / across), blank = rows * across - n;
+  return `${n} labels = ${rows} row${rows === 1 ? '' : 's'} of ${across}${blank ? ` · <b class="warn">${blank} label${blank === 1 ? '' : 's'} left blank</b>` : ' · no blanks'}`;
+}
+async function openLabels(it) {
+  let info;
+  try { info = await rpc('print.labelInfo', it.code); } catch (err) { toast(err.message, { err: true }); return; }
+  const across = info.across;
+  const def = across * Math.max(1, Math.ceil(Math.min(it.stock > 0 ? it.stock : 1, 300) / across));
   const m = openModal(`<h2>Print barcode labels</h2>
     <p><b>${esc(it.name)}</b> <span class="num muted">${esc(it.code)}</span></p>
+    ${info.fits ? '' : `<div class="confirmbar" style="background:color-mix(in srgb,var(--warn) 14%,transparent)"><span><b>This code is too long for a ${esc(info.w)} mm label.</b> The bars come out too thin and scanners can’t read them. Give the item a short code like NR10023 and it will scan.</span><button type="button" class="btn" id="lShort">Use a short code</button></div>`}
     <div class="form2">
-      <label class="f"><span>How many labels</span><input type="number" id="lCount" min="1" max="500" value="${it.stock > 0 && it.stock <= 200 ? Math.ceil(it.stock) : 1}"></label>
-      <div class="f"><span class="lbl">Label size</span><div class="num" style="padding-top:8px">${esc(S.settings.label_w)} × ${esc(S.settings.label_h)} mm</div></div>
-      <p class="muted small w">Printer: ${esc(S.settings.label_printer || S.settings.printer || 'Windows default')}. Change the label size and printer in Settings.</p>
+      <label class="f"><span>How many labels</span><input type="number" id="lCount" min="1" max="1000" value="${def}"></label>
+      <div class="f"><span class="lbl">Roll</span><div style="padding-top:8px">${across} across · ${esc(info.w)} × ${esc(info.h)} mm</div></div>
+      <p class="muted small w" id="lRows"></p>
+      <p class="muted small w">To mix different items on the same sheet with no blank labels, use <b>Add to label list</b>, then print the whole list at once from Items &amp; stock.</p>
     </div>
     <div class="err" id="lErr"></div>
-    <div class="foot"><button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="lGo">Print labels</button></div>`);
+    <div class="foot"><button type="button" class="btn" data-close>Close</button><button type="button" class="btn" id="lAdd">Add to label list</button><button type="button" class="btn accent" id="lGo">Print now</button></div>`);
+  const cnt = () => Math.max(1, parseInt($('#lCount', m).value, 10) || 1);
+  const upd = () => { $('#lRows', m).innerHTML = rowsText(cnt(), across); };
+  upd(); $('#lCount', m).addEventListener('input', upd);
   setTimeout(() => { $('#lCount', m).focus(); $('#lCount', m).select(); }, 30);
+  $('#lShort', m)?.addEventListener('click', async () => {
+    if (!(await requireOwner('Changing an item code needs the owner PIN'))) return;
+    try {
+      const code = await rpc('items.nextCode');
+      const saved = await rpc('items.save', { ...it, code }, it.code);
+      S.items.delete(it.code); S.items.set(saved.code, saved);
+      S.labelQ = S.labelQ.map(q => q.code === it.code ? { ...q, code: saved.code } : q); saveQ();
+      closeModal(m); toast(`${saved.name} now has code ${saved.code}`); renderItemRows(); openLabels(saved);
+    } catch (err) { $('#lErr', m).textContent = err.message; }
+  });
+  $('#lAdd', m).addEventListener('click', () => {
+    const q = S.labelQ.find(x => x.code === it.code);
+    if (q) q.count += cnt(); else S.labelQ.push({ code: it.code, count: cnt() });
+    saveQ(); closeModal(m); toast(`Added ${cnt()} labels of ${it.name} to the label list`);
+  });
   const go = async () => {
     $('#lGo', m).disabled = true;
-    try { await rpc('print.labels', it.code, +$('#lCount', m).value || 1); toast('Labels sent to printer'); closeModal(m); }
+    try { await rpc('print.labels', [{ code: it.code, count: cnt() }]); toast('Labels sent to printer'); closeModal(m); }
     catch (err) { $('#lErr', m).textContent = err.message; $('#lGo', m).disabled = false; }
   };
   $('#lGo', m).addEventListener('click', go);
   $('#lCount', m).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+}
+async function openLabelList() {
+  const across = Math.max(1, parseInt(S.settings.label_across, 10) || 1);
+  const m = openModal(`<h2>Label list</h2><div id="qBody"></div><div class="err" id="qErr"></div>
+    <div class="foot"><button type="button" class="btn danger left" id="qClear">Clear list</button><button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="qGo">Print all</button></div>`, { wide: true });
+  const draw = () => {
+    S.labelQ = S.labelQ.filter(q => S.items.has(q.code));
+    const total = S.labelQ.reduce((a, q) => a + q.count, 0);
+    const blank = across > 1 ? (Math.ceil(total / across) * across - total) : 0;
+    $('#qBody', m).innerHTML = !S.labelQ.length ? `<div class="empty"><b>The label list is empty</b>Click <b>Labels</b> on any item and choose <b>Add to label list</b>.</div>` : `
+      <div class="tablewrap" style="max-height:50vh"><table class="grid"><thead><tr><th>Item</th><th>Code</th><th class="r" style="width:140px">Labels</th><th style="width:44px"></th></tr></thead>
+      <tbody>${S.labelQ.map((q, i) => { const it = S.items.get(q.code); return `<tr><td><b>${esc(it.name)}</b></td><td class="num muted">${esc(it.code)}</td><td class="r"><input type="number" min="0" data-qi="${i}" value="${q.count}" style="width:90px;text-align:right"></td><td><button type="button" class="xbtn" data-qrm="${i}" aria-label="Remove">×</button></td></tr>`; }).join('')}</tbody></table></div>
+      <p>${rowsText(total, across)}${blank ? ` <button type="button" class="btn" id="qFill">Fill the last row (+${blank} of the last item)</button>` : ''}</p>`;
+    $('#qGo', m).disabled = !total;
+    $('#qFill', m)?.addEventListener('click', () => { S.labelQ[S.labelQ.length - 1].count += blank; saveQ(); draw(); });
+  };
+  draw();
+  $('#qBody', m).addEventListener('change', e => { const i = e.target.dataset.qi; if (i == null) return; S.labelQ[+i].count = Math.max(0, parseInt(e.target.value, 10) || 0); S.labelQ = S.labelQ.filter(q => q.count > 0); saveQ(); draw(); });
+  $('#qBody', m).addEventListener('click', e => { const b = e.target.closest('[data-qrm]'); if (!b) return; S.labelQ.splice(+b.dataset.qrm, 1); saveQ(); draw(); });
+  $('#qClear', m).addEventListener('click', () => { S.labelQ = []; saveQ(); draw(); });
+  $('#qGo', m).addEventListener('click', async () => {
+    $('#qGo', m).disabled = true;
+    try { const n = await rpc('print.labels', S.labelQ); toast(`${n} labels sent to printer`); S.labelQ = []; saveQ(); closeModal(m); }
+    catch (err) { $('#qErr', m).textContent = err.message; $('#qGo', m).disabled = false; }
+  });
 }
 
 async function openStockIn(it) {
@@ -515,6 +572,7 @@ function renderItems() {
   $('#v-items').innerHTML = `<div class="page">
     <div class="ph"><h1>Items &amp; stock</h1>
       <div class="toolbar">
+        <button type="button" class="btn" id="qBtn">Label list (${S.labelQ.length})</button>
         <button type="button" class="btn" id="impBtn">Import CSV</button>
         <button type="button" class="btn" id="expBtn">Export CSV</button>
         <button type="button" class="btn primary" id="addBtn">+ Add item <kbd>Ins</kbd></button>
@@ -527,6 +585,7 @@ function renderItems() {
     <div class="tablewrap"><table class="grid" id="itemTable"></table></div></div>`;
   $('#addBtn').addEventListener('click', () => openItemForm(null));
   $('#impBtn').addEventListener('click', importCsv);
+  $('#qBtn').addEventListener('click', openLabelList);
   $('#expBtn').addEventListener('click', exportItems);
   $('#itemQ').addEventListener('input', e => { LS.set('itemQ', e.target.value); renderItemRows(); });
   $('#itemSeg').addEventListener('click', e => { const b = e.target.closest('[data-f]'); if (!b) return; itemFilter = b.dataset.f; $$('#itemSeg button').forEach(x => x.setAttribute('aria-pressed', x === b)); renderItemRows(); });
@@ -773,12 +832,18 @@ async function renderSettings() {
       <p class="muted">For items without a barcode: click <b>Make code</b> on the item, then print labels and stick them on the packet or bin.</p>
       <div class="form2">
         <label class="f w"><span>Label printer</span><select id="s_label_printer">${opt(s.label_printer).replace('Windows default printer', 'Same as receipt printer')}</select></label>
-        <label class="f"><span>Label width (mm)</span><input type="number" id="s_label_w" value="${esc(s.label_w)}"></label>
-        <label class="f"><span>Label height (mm)</span><input type="number" id="s_label_h" value="${esc(s.label_h)}"></label>
+        <label class="f"><span>Labels across the roll</span><select id="s_label_across">${[1, 2, 3, 4].map(n => `<option value="${n}"${(+s.label_across || 1) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+        <label class="f"><span>Gap between labels (mm)</span><input type="number" step="0.5" id="s_label_gap" value="${esc(s.label_gap)}"></label>
+        <label class="f"><span>One label width (mm)</span><input type="number" step="0.5" id="s_label_w" value="${esc(s.label_w)}"></label>
+        <label class="f"><span>One label height (mm)</span><input type="number" step="0.5" id="s_label_h" value="${esc(s.label_h)}"></label>
+        <label class="f"><span>Printer resolution</span><select id="s_label_dpi"><option value="203"${s.label_dpi !== '300' ? ' selected' : ''}>203 dpi (most printers)</option><option value="300"${s.label_dpi === '300' ? ' selected' : ''}>300 dpi</option></select></label>
+        <label class="f"><span>Bar thickness</span><select id="s_label_bar">${[['', 'Automatic'], ['2', 'Thin'], ['3', 'Medium'], ['4', 'Thick']].map(([v, l]) => `<option value="${v}"${(s.label_bar || '') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Move print right (mm)</span><input type="number" step="0.5" id="s_label_shift" value="${esc(s.label_shift)}" placeholder="0"></label>
         <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_label_price" ${s.label_price !== '0' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Show price on label</span></label>
         <label class="f"><span>Low-stock alert at (default)</span><input type="number" id="s_low_stock" value="${esc(s.low_stock)}"></label>
+        <p class="muted small w">The size is printed on the roll’s box, e.g. “38×25 mm, 3 up”. If the print sits off the labels, change the gap or move it left/right (negative moves it left).</p>
       </div>
-      <div class="toolbar"><button type="button" class="btn" id="prevLabel">Preview label</button></div></section>
+      <div class="toolbar"><button type="button" class="btn" id="prevLabel">Preview one row</button><button type="button" class="btn" id="testLabel">Print one test row</button></div></section>
     <section class="card"><h2>Data &amp; backups</h2>
       <p>All your items and bills are saved on this laptop in:</p><div class="path">${esc(info.dbFile)}</div>
       <p>A backup copy is made when the app opens, every 30 minutes while you work, and when you close it. The last 60 copies are kept in:</p><div class="path">${esc(info.backupDir)}</div>
@@ -798,7 +863,7 @@ async function renderSettings() {
     </div>
     <div class="toolbar" style="position:sticky;bottom:0;padding:14px 0 0;background:var(--bg);margin-top:14px"><button type="button" class="btn primary big" id="sSave" style="min-width:220px">Save settings</button><span class="muted small" id="sMsg"></span><span class="muted small" style="margin-left:auto">NRRL Billing v${esc(info.version)}</span></div>
   </div>`;
-  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock'];
+  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift'];
   const collect = () => {
     const o = {}; for (const k of keys) o[k] = $('#s_' + k).value;
     o.label_price = $('#s_label_price').checked ? '1' : '0';
@@ -811,7 +876,16 @@ async function renderSettings() {
   $('#sSave').addEventListener('click', () => save(false));
   $('#testPrint').addEventListener('click', async () => { if (!(await save(true))) return; rpc('print.test').then(() => toast('Test receipt sent')).catch(err => toast(err.message, { err: true, ms: 9000 })); });
   $('#prevPrint').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.preview', 'sample'); openModal(`<h2>Receipt preview</h2><p class="muted">Paper ${esc(S.settings.paper)} mm. The real print may look slightly different depending on the printer.</p><div style="display:flex;justify-content:center"><iframe title="Receipt preview" sandbox srcdoc="${esc(html)}" style="border:1px solid var(--line);width:${S.settings.paper === '58' ? 240 : 330}px;height:560px;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`); });
-  $('#prevLabel').addEventListener('click', async () => { if (!(await save(true))) return; const first = S.items.values().next().value; const html = await rpc('print.labelPreview', first ? first.code : ''); const w = Math.round((+S.settings.label_w || 50) * 3.78), h = Math.round((+S.settings.label_h || 25) * 3.78); openModal(`<h2>Label preview</h2><p class="muted">${esc(S.settings.label_w)} × ${esc(S.settings.label_h)} mm, shown larger.</p><div style="display:flex;justify-content:center;padding:20px;background:var(--sunk);border-radius:8px"><iframe title="Label preview" sandbox srcdoc="${esc(html)}" style="border:0;width:${w}px;height:${h}px;background:#fff;transform:scale(2);transform-origin:center;margin:${h / 2}px ${w / 2}px"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`); });
+  $('#prevLabel').addEventListener('click', async () => {
+    if (!(await save(true))) return;
+    const first = S.items.values().next().value;
+    const [html, info] = await Promise.all([rpc('print.labelPreview', first ? first.code : ''), rpc('print.labelInfo', first ? first.code : '')]);
+    const k = 3.78, w = Math.round(info.pageW * k), h = Math.round(info.h * k), sc = Math.min(2.2, 760 / w);
+    openModal(`<h2>Label preview</h2><p class="muted">One row of the roll: ${info.across} × ${esc(info.w)} × ${esc(info.h)} mm. Bars are ${info.moduleMm.toFixed(2)} mm (${info.dots} printer dots) wide${info.fits ? '.' : ' — <b>too thin to scan; use a shorter code or a wider label</b>.'}</p>
+      <div style="display:flex;justify-content:center;padding:16px;background:var(--sunk);border-radius:8px;overflow:auto"><div style="width:${Math.round(w * sc)}px;height:${Math.round(h * sc)}px"><iframe title="Label preview" sandbox srcdoc="${esc(html)}" style="border:0;width:${w}px;height:${h}px;background:#fff;transform:scale(${sc});transform-origin:0 0"></iframe></div></div>
+      <div class="foot"><button type="button" class="btn" data-close>Close</button></div>`, { wide: true });
+  });
+  $('#testLabel').addEventListener('click', async () => { if (!(await save(true))) return; rpc('print.testLabel').then(() => toast('Test row sent to label printer')).catch(err => toast(err.message, { err: true, ms: 9000 })); });
   $('#refPrinters').addEventListener('click', async () => { S.printers = await rpc('printers.list').catch(() => []); await save(true); renderSettings(); });
   $('#pickExtra').addEventListener('click', async () => { const p = await rpc('backup.chooseExtra'); if (p) { S.settings = await rpc('settings.get'); renderSettings(); toast('Backups will also be copied to ' + p); } });
   $('#clearExtra')?.addEventListener('click', async () => { S.settings = await rpc('settings.save', { backup_extra: '' }); renderSettings(); });
