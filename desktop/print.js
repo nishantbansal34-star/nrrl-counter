@@ -156,6 +156,10 @@ function labelRates(item, s) {
   }
   return { retail, ws };
 }
+// biggest font (pt) at which a rate still fits across the label on its own line
+const capPt = (wMm, main, unit) => ((wMm - 3.5) * 2.835 / (main * 0.62 + unit * 0.72 * 0.56)).toFixed(1);
+/* Rate text size: 100 = normal, up to 250 = two and a half times bigger */
+const rateScale = s => { const v = parseInt(s.label_rate_size, 10); return (v >= 70 && v <= 300 ? v : 100) / 100; };
 /* The shop logo on a label: a black-and-white picture made when it was added in Settings. */
 const logoOn = s => !!(s.label_logo && s.label_show_logo !== '0');
 const logoMm = s => { const { h } = labelSize(s); return Math.max(3.5, Math.min(10, h * 0.2)); };
@@ -171,7 +175,7 @@ function labelCell(item, s, bc, xMm) {
       ${logoOn(s) ? `<div class="hd"><img class="logo" src="${s.label_logo}" alt=""><div class="nm">${esc(item.name)}</div></div>` : `<div class="nm">${esc(item.name)}</div>`}
       <div class="bc"><svg class="bars" style="left:${(absLeft - xMm).toFixed(4)}mm;width:${bc.widthMm.toFixed(4)}mm" viewBox="0 0 ${vw} 100" preserveAspectRatio="none" shape-rendering="crispEdges" fill="#000">${rects}</svg></div>
       <div class="code">${esc(item.code)}</div>
-      ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}
+      ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr" style="--cap:${capPt(w, ('₹' + r.retail.amt).length, r.retail.unit.length + 1)}pt">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws" style="--cap:${capPt(w, r.ws.code.length, r.ws.unit.length + 1)}pt">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}
     </div>`;
 }
 /* list = one entry per label (item or null for a blank). Each printed page is one row of the roll. */
@@ -181,6 +185,7 @@ function labelsHTML(list, s, bcs) {
   for (let i = 0; i < list.length; i += across) rows.push(list.slice(i, i + across));
   const small = h < 22 || w < 40, big = h >= 40 && w >= 60;
   const fz = (sm, md, bg) => small ? sm : big ? bg : md;
+  const rs = rateScale(s); // rate text size chosen in Settings / print window
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     @page{size:${pageW}mm ${h}mm;margin:0}
     *{box-sizing:border-box}
@@ -194,10 +199,12 @@ function labelsHTML(list, s, bcs) {
     .hd .nm{padding:0;flex:1;min-width:0;max-height:2.3em;white-space:normal;line-height:1.1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
     .logo{height:${logoMm(s).toFixed(2)}mm;width:auto;max-width:45%;object-fit:contain;image-rendering:pixelated;flex:none}
     .bars{position:absolute;top:0;height:100%}
-    .row{display:flex;justify-content:space-between;align-items:baseline;gap:1mm;padding:0 1.5mm;white-space:nowrap}
+    .row{display:flex;justify-content:space-between;align-items:baseline;gap:0 1mm;padding:0 1.5mm;white-space:nowrap;flex-wrap:wrap;flex:none}
+    .row .ws{margin-left:auto}
+    .bc{min-height:${rs > 1.2 ? 5 : 4}mm}
     .code{font-size:${fz(5, 6, 9)}pt;font-family:Consolas,monospace;text-align:center;line-height:1.1;white-space:nowrap;overflow:hidden}
-    .pr{font-size:${fz(8.5, 11, 18)}pt;font-weight:800;line-height:1}
-    .ws{font-size:${fz(7.5, 9.5, 15)}pt;font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
+    .pr{font-size:min(${(fz(8.5, 11, 18) * rs).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1}
+    .ws{font-size:min(${(fz(7.5, 9.5, 15) * rs).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
     .pr small,.ws small{font-size:.72em;font-weight:700}
   </style></head><body>${rows.map(r => `<div class="pg">${r.map((it, i) => labelCell(it, s, it && bcs[it.code], shift + i * (w + gap))).join('')}</div>`).join('')}</body></html>`;
 }
@@ -287,9 +294,15 @@ async function tsplLabels(entries, s) {
       const right = r.ws ? `${r.ws.code}/${r.ws.unit}` : '';
       // pick the biggest built-in font that fits both rates on one line
       const avail = wD - 2 * pad - 8;
-      const font = (left.length + right.length) * 12 <= avail ? { f: '2', cw: 12, ch: 20 } : { f: '1', cw: 8, ch: 12 };
+      // printer's built-in fonts, smallest to largest; pick by the rate size chosen, as big as fits
+      const FONTS = [{ f: '1', cw: 8, ch: 12 }, { f: '2', cw: 12, ch: 20 }, { f: '3', cw: 16, ch: 24 }, { f: '4', cw: 24, ch: 32 }, { f: '5', cw: 32, ch: 48 }];
+      const wantH = 20 * rateScale(s) * (dpi === 300 ? 1.5 : 1);
+      const fit = n => FONTS.filter(x => x.ch <= Math.max(12, wantH) && n * x.cw <= wD - 2 * pad);
+      let font = fit(left.length + right.length + 1).pop(), twoLines = false;
+      const one = fit(Math.max(left.length, right.length)).pop() || FONTS[0];
+      if (!font || one.ch > font.ch) { font = one; twoLines = !!(left && right); }
       const topY = D(1), nameH = 20;
-      const rateY = hD - D(0.8) - font.ch, codeY = rateY - 2 - 12;
+      const rateY = hD - D(0.8) - font.ch, codeY = (twoLines ? rateY - font.ch - 2 : rateY) - 2 - 12;
       const bcY = topY + (logo ? Math.max(nameH, logo.h) : nameH) + D(0.6), bcH = Math.max(D(5), codeY - D(0.4) - bcY);
       let nameX = x0 + pad, headH = nameH;
       if (logo) {
@@ -300,7 +313,7 @@ async function tsplLabels(entries, s) {
       out.push(`BARCODE ${x0 + Math.max(0, Math.round((wD - bw) / 2))},${bcY},"${TYPE[kind]}",${bcH},0,0,${bc.dots},${bc.dots},"${tsplText(it.code)}"`);
       const codeTxt = tsplText(it.code).slice(0, Math.floor((wD - 2 * pad) / 8));
       out.push(`TEXT ${x0 + Math.round((wD - codeTxt.length * 8) / 2)},${codeY},"1",0,1,1,"${codeTxt}"`);
-      if (left) out.push(`TEXT ${x0 + pad},${rateY},"${font.f}",0,1,1,"${left}"`);
+      if (left) out.push(`TEXT ${x0 + pad},${twoLines ? rateY - font.ch - 2 : rateY},"${font.f}",0,1,1,"${left}"`);
       if (right) out.push(`TEXT ${x0 + wD - pad - right.length * font.cw},${rateY},"${font.f}",0,1,1,"${right}"`);
     });
     out.push('PRINT 1,1');

@@ -642,6 +642,9 @@ async function sizeChips() {
   const z = await rpc('labels.sizes').catch(() => ({ list: [] }));
   return z.list.length > 1 ? `<div class="sizes w" id="lSizes">${z.list.map(x => `<button type="button" data-size="${esc(x.id)}" aria-pressed="${x.id === z.active}"><b>${+x.w} × ${+x.h} mm</b><small>${+x.across} across</small></button>`).join('')}</div>` : '';
 }
+const RATE_SIZES = [['100', 'Normal'], ['130', 'Large'], ['160', 'Extra large'], ['200', 'Huge'], ['250', 'Biggest']];
+const rateSel = (id, v) => `<select id="${id}" style="width:auto">${RATE_SIZES.map(([k, l]) => `<option value="${k}"${String(v || '100') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+const rateField = () => `<label style="display:flex;gap:8px;align-items:center">Rate size ${rateSel('lRate', S.settings.label_rate_size)}</label>`;
 const logoTick = () => S.settings.label_logo ? `<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lLogo" ${S.settings.label_show_logo !== '0' ? 'checked' : ''}> Show logo</label>` : '';
 async function openLabels(it, keepCount) {
   if (!(await requirePerm('labels', 'Printing labels is switched off for you'))) return;
@@ -656,7 +659,7 @@ async function openLabels(it, keepCount) {
       <label class="f"><span>How many labels</span><input type="number" id="lCount" min="1" max="1000" value="${def}"></label>
       ${chips ? '' : `<div class="f"><span class="lbl">Roll</span><div style="padding-top:8px">${across} across · ${esc(info.w)} × ${esc(info.h)} mm</div></div>`}
       ${chips ? `<div class="f w"><span class="lbl">Label size</span>${chips}</div>` : ''}
-<div class="w" style="display:flex;gap:18px;flex-wrap:wrap">${logoTick()}
+<div class="w" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">${rateField()}${logoTick()}
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
       </div>
@@ -697,12 +700,12 @@ async function openLabels(it, keepCount) {
   $('#lGo', m).addEventListener('click', go);
   $('#lCount', m).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
 }
-const showOpts = m => ({ retail: $('#lRetail', m).checked, wholesale: $('#lWs', m).checked, ...($('#lLogo', m) ? { logo: $('#lLogo', m).checked } : {}) });
+const showOpts = m => ({ retail: $('#lRetail', m).checked, wholesale: $('#lWs', m).checked, ...($('#lLogo', m) ? { logo: $('#lLogo', m).checked } : {}), ...($('#lRate', m) ? { rateSize: $('#lRate', m).value } : {}) });
 async function openLabelList() {
   if (!(await requirePerm('labels', 'Printing labels is switched off for you'))) return;
   const across = Math.max(1, parseInt(S.settings.label_across, 10) || 1), chips = await sizeChips();
   const m = openModal(`<h2>Label list</h2>${chips ? `<div class="f"><span class="lbl">Label size</span>${chips}</div>` : ''}<div id="qLong"></div><div id="qBody"></div>
-    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">${logoTick()}
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px;align-items:center">${rateField()}${logoTick()}
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
     </div><div class="err" id="qErr"></div>
@@ -1134,6 +1137,8 @@ async function renderSettings() {
         <label class="f"><span>Move print right (mm)</span><input type="number" step="0.5" id="s_label_shift" value="${esc(s.label_shift)}" placeholder="0"></label>
         <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_label_price" ${s.label_price !== '0' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Show price on label</span></label>
         <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_label_wcode" ${s.label_wcode !== '0' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Show wholesale rate as a code</span></label>
+        <label class="f"><span>Rate size on labels</span>${rateSel('s_label_rate_size', s.label_rate_size)}</label>
+        <p class="muted small" style="align-self:end">Bigger rates are easier to read; the barcode gets a little shorter. Use <b>Preview one row</b> to check.</p>
         <label class="f"><span>Wholesale code starts with</span><input type="text" id="s_wcode_prefix" value="${esc(s.wcode_prefix ?? 'NRRL')}"></label>
         <label class="f"><span>Wholesale code = wholesale rate ×</span><input type="number" step="any" id="s_wcode_mult" value="${esc(s.wcode_mult || '2')}"></label>
         <p class="muted small w" id="wcodeEx"></p>
@@ -1164,7 +1169,7 @@ async function renderSettings() {
     </div>
     <div class="toolbar" style="position:sticky;bottom:0;padding:14px 0 0;background:var(--bg);margin-top:14px"><button type="button" class="btn primary big" id="sSave" style="min-width:220px">Save settings</button><span class="muted small" id="sMsg"></span><span class="muted small" style="margin-left:auto">NRRL Billing v${esc(info.version)}</span></div>
   </div>`;
-  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density', 'wcode_prefix', 'wcode_mult'];
+  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density', 'label_rate_size', 'wcode_prefix', 'wcode_mult'];
   const collect = () => {
     const o = {}; for (const k of keys) o[k] = $('#s_' + k).value;
     if ($('#s_label_show_logo')) { o.label_show_logo = $('#s_label_show_logo').checked ? '1' : '0'; o.label_logo_invert = $('#s_label_logo_invert').checked ? '1' : '0'; }
