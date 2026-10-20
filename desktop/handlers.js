@@ -40,11 +40,12 @@ function makeHandlers(ctx) {
       return P.receiptHTML(b, settings(), { duplicate: !!duplicate });
     },
     'print.test': async () => { await ctx.printReceipt(P.sampleBill(), settings(), {}); return true; },
-    'print.labels': async (list) => {
-      // list: [{code, count}]
+    'print.labels': async (list, show) => {
+      // list: [{code, count}]; show: {retail, wholesale} chosen in the print window (remembered for next time)
       const entries = (Array.isArray(list) ? list : []).map(e => ({ item: st().getItem(e.code), count: e.count }));
       const missing = entries.find(e => !e.item);
       if (missing) throw new Error('An item on the label list no longer exists. Remove it and try again.');
+      if (show) st().saveSettings({ label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0' });
       return ctx.printLabels(entries, settings());
     },
     'print.labelPreview': async code => {

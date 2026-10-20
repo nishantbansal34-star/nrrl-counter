@@ -499,6 +499,10 @@ async function openLabels(it) {
     <div class="form2">
       <label class="f"><span>How many labels</span><input type="number" id="lCount" min="1" max="1000" value="${def}"></label>
       <div class="f"><span class="lbl">Roll</span><div style="padding-top:8px">${across} across · ${esc(info.w)} × ${esc(info.h)} mm</div></div>
+<div class="w" style="display:flex;gap:18px;flex-wrap:wrap">
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
+      </div>
       <p class="muted small w" id="lRows"></p>
       <p class="muted small w">To mix different items on the same sheet with no blank labels, use <b>Add to label list</b>, then print the whole list at once from Items &amp; stock.</p>
     </div>
@@ -525,15 +529,20 @@ async function openLabels(it) {
   });
   const go = async () => {
     $('#lGo', m).disabled = true;
-    try { await rpc('print.labels', [{ code: it.code, count: cnt() }]); toast('Labels sent to printer'); closeModal(m); }
+    try { await rpc('print.labels', [{ code: it.code, count: cnt() }], showOpts(m)); S.settings = await rpc('settings.get'); toast('Labels sent to printer'); closeModal(m); }
     catch (err) { $('#lErr', m).textContent = err.message; $('#lGo', m).disabled = false; }
   };
   $('#lGo', m).addEventListener('click', go);
   $('#lCount', m).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
 }
+const showOpts = m => ({ retail: $('#lRetail', m).checked, wholesale: $('#lWs', m).checked });
 async function openLabelList() {
   const across = Math.max(1, parseInt(S.settings.label_across, 10) || 1);
-  const m = openModal(`<h2>Label list</h2><div id="qBody"></div><div class="err" id="qErr"></div>
+  const m = openModal(`<h2>Label list</h2><div id="qBody"></div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
+      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
+    </div><div class="err" id="qErr"></div>
     <div class="foot"><button type="button" class="btn danger left" id="qClear">Clear list</button><button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="qGo">Print all</button></div>`, { wide: true });
   const draw = () => {
     S.labelQ = S.labelQ.filter(q => S.items.has(q.code));
@@ -552,7 +561,7 @@ async function openLabelList() {
   $('#qClear', m).addEventListener('click', () => { S.labelQ = []; saveQ(); draw(); });
   $('#qGo', m).addEventListener('click', async () => {
     $('#qGo', m).disabled = true;
-    try { const n = await rpc('print.labels', S.labelQ); toast(`${n} labels sent to printer`); S.labelQ = []; saveQ(); closeModal(m); }
+    try { const n = await rpc('print.labels', S.labelQ, showOpts(m)); S.settings = await rpc('settings.get'); toast(`${n} labels sent to printer`); S.labelQ = []; saveQ(); closeModal(m); }
     catch (err) { $('#qErr', m).textContent = err.message; $('#qGo', m).disabled = false; }
   });
 }
