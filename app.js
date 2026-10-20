@@ -100,6 +100,7 @@ async function loadItems(quiet) {
     S.items.clear(); list.forEach(i => S.items.set(i.code, normItem(i)));
     LS.set('items', [...S.items.values()]);
     if (S.view === 'items') renderItems();
+    renderQuick();
   } catch (e) { if (!quiet && !e.net) toast(e.message, true); }
 }
 function normItem(i) { return { code: String(i.code), name: i.name, retail: +i.retail, wholesale: +i.wholesale, wholesale_unit: i.wholesale_unit || '', wholesale_qty: +i.wholesale_qty || 1, stock: i.stock == null ? null : +i.stock, unit: i.unit || 'pcs', gst: +i.gst, hsn: i.hsn || '' }; }
