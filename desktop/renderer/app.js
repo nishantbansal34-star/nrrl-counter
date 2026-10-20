@@ -74,36 +74,89 @@ function findItem(code) {
   }
   return null;
 }
-function searchItems(q, limit = 12) {
-  q = q.trim().toLowerCase();
-  if (q.length < 2) return [];
-  const words = q.split(/\s+/), starts = [], rest = [];
-  for (const it of S.items.values()) {
-    const hay = (it.name + ' ' + it.code).toLowerCase();
-    if (words.every(w => hay.includes(w))) (it.name.toLowerCase().startsWith(q) || it.code.toLowerCase().startsWith(q) ? starts : rest).push(it);
-    if (starts.length >= limit) break;
+/* Search: every typed word must match the start of a word in the name, appear in the name or code,
+   or be one letter off (typo). Exact and starting matches first, then items sold most often. */
+const normQ = t => String(t || '').toLowerCase().replace(/[^a-z0-9\u0900-\u097f]+/g, ' ').trim();
+function near(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, d = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++d > 1) return false;
+    if (a[i] === b[j + 1] && a[i + 1] === b[j]) { i += 2; j += 2; continue; }
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
   }
-  return starts.concat(rest).slice(0, limit);
+  return d + (a.length - i) + (b.length - j) <= 1;
 }
+function rankItems(list, q, limit = 12) {
+  const nq = normQ(q); if (nq.length < 2 && !/^\d$/.test(nq)) return [];
+  const words = nq.split(' '), lq = String(q).trim().toLowerCase(), freq = LS.get('freq', {}), out = [];
+  for (const it of list) {
+    const code = it.code.toLowerCase(), name = normQ(it.name), nw = name.split(' ');
+    let sc;
+    if (code === lq) sc = 1000; else if (lq.length >= 2 && code.startsWith(lq)) sc = 500;
+    else {
+      sc = 0;
+      for (const w of words) {
+        if (nw.some(x => x.startsWith(w))) sc += 30;
+        else if (name.includes(w)) sc += 15;
+        else if (code.includes(w)) sc += 12;
+        else if (w.length >= 4 && nw.some(x => near(x.slice(0, w.length), w) || near(x.slice(0, w.length + 1), w) || near(x, w))) sc += 6;
+        else { sc = -1; break; }
+      }
+      if (sc < 0) continue;
+      if (name.startsWith(nq)) sc += 40;
+    }
+    out.push([sc + Math.min(25, freq[it.code] || 0), it]);
+  }
+  return out.sort((a, b) => b[0] - a[0] || a[1].name.localeCompare(b[1].name)).slice(0, limit).map(x => x[1]);
+}
+const searchItems = (q, limit = 12) => rankItems(S.items.values(), q, limit);
+function hl(text, q) {
+  let h = esc(text);
+  for (const w of normQ(q).split(' ').filter(w => w.length > 1)) h = h.replace(new RegExp('(^|[^a-z0-9])(' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i'), '$1<mark>$2</mark>');
+  return h;
+}
+function bumpFreq(code) { const f = LS.get('freq', {}); f[code] = (f[code] || 0) + 1; LS.set('freq', f); }
+function topItems(n) { const f = LS.get('freq', {}); return Object.keys(f).filter(c => S.items.has(c)).sort((a, b) => f[b] - f[a]).slice(0, n).map(c => S.items.get(c)); }
 const lowLevel = it => it.min_stock != null ? +it.min_stock : (+S.settings.low_stock || 5);
 
-/* ================= owner lock ================= */
-const locked = () => S.settings.hasPin && Date.now() > S.unlockedUntil;
+/* ================= who is using the laptop, and what they may do =================
+   Linked to the phone app: everyone signs in with their own PIN, and the owner's switches (Staff tab
+   in the phone app) decide what each person can do. Not linked: the optional owner PIN locks the
+   owner-only actions, as before. The owner's PIN always unlocks everything for 15 minutes. */
+const PERM_DEF = { bill: true, rate: false, stock: true, add: true, edit: false, sales: true, reports: false, cancel: false, labels: true, settings: false };
+S.auth = { user: null, staff: [], linked: false };
+const staffMode = () => !!S.auth.user;
+const ownerOn = () => Date.now() < S.unlockedUntil;
+const locked = () => staffMode() ? !(S.auth.user.role === 'owner' || ownerOn()) : (S.settings.hasPin && !ownerOn());
+function can(k) {
+  if (!locked()) return true;
+  const p = staffMode() ? (S.auth.user.perms || {}) : {};
+  return !!(k in p ? p[k] : PERM_DEF[k]);
+}
+const requirePerm = (k, title) => can(k) ? Promise.resolve(true) : ownerPrompt(title);
+const requireOwner = title => locked() ? ownerPrompt(title) : Promise.resolve(true);
 function renderLock() {
-  const b = $('#lockBtn');
-  b.hidden = !S.settings.hasPin;
+  const b = $('#lockBtn'), u = $('#userBox');
+  if (u) {
+    u.hidden = !staffMode();
+    if (staffMode()) u.innerHTML = `<span class="who"><b>${esc(S.auth.user.name)}</b><small>${S.auth.user.role === 'owner' ? 'Owner' : 'Staff'}</small></span><button type="button" class="btn sm" id="switchUser">Switch</button>`;
+    $('#switchUser')?.addEventListener('click', () => signOut());
+  }
+  const needs = staffMode() ? S.auth.user.role !== 'owner' : S.settings.hasPin;
+  b.hidden = !needs;
   b.textContent = locked() ? 'Owner: locked' : 'Owner: unlocked · Lock';
 }
 $('#lockBtn').addEventListener('click', async () => {
-  if (locked()) await requireOwner('Unlock owner access');
-  else { S.unlockedUntil = 0; toast('Owner access locked'); }
+  if (locked()) await ownerPrompt('Unlock owner access');
+  else { S.unlockedUntil = 0; rpc('auth.lockOwner').catch(() => {}); toast('Owner access locked'); }
   renderLock(); refreshView();
 });
-setInterval(() => { if (S.settings.hasPin) renderLock(); }, 30000);
-function requireOwner(title = 'Owner PIN needed') {
-  if (!locked()) return Promise.resolve(true);
+setInterval(() => { renderLock(); }, 30000);
+function ownerPrompt(title = 'Owner PIN needed') {
   return new Promise(resolve => {
-    const m = openModal(`<h2>${esc(title)}</h2><p class="muted">Enter the owner PIN to continue.</p>
+    const m = openModal(`<h2>${esc(title)}</h2><p class="muted">${staffMode() ? 'You don’t have access to this. The owner can enter their PIN to allow it.' : 'Enter the owner PIN to continue.'}</p>
       <form class="pinpad" id="pinForm"><input type="password" id="pinIn" inputmode="numeric" maxlength="8" autocomplete="off">
       <div class="err" id="pinErr"></div>
       <div class="foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn accent" type="submit">Unlock</button></div></form>`,
@@ -111,12 +164,65 @@ function requireOwner(title = 'Owner PIN needed') {
     setTimeout(() => $('#pinIn', m).focus(), 30);
     $('#pinForm', m).addEventListener('submit', async e => {
       e.preventDefault();
-      const ok = await rpc('auth.check', $('#pinIn', m).value).catch(() => false);
+      $('#pinErr', m).textContent = 'Checking…';
+      let ok = false;
+      try { ok = await rpc('auth.owner', $('#pinIn', m).value); } catch (err) { $('#pinErr', m).textContent = err.message; return; }
       if (!ok) { $('#pinErr', m).textContent = 'Wrong PIN.'; $('#pinIn', m).select(); beep(false); return; }
       S.unlockedUntil = Date.now() + 15 * 60e3;
       m._onClose = null; closeModal(m); renderLock(); resolve(true);
     });
   });
+}
+/* Sign-in screen: shown when the laptop is linked and has the staff list. */
+async function loadAuth() {
+  try { S.auth = { ...S.auth, ...(await rpc('auth.state')) }; } catch (e) {}
+  if (S.auth.ownerUntil) S.unlockedUntil = S.auth.ownerUntil;
+}
+const needSignIn = () => S.auth.linked && S.auth.staff.length > 0 && !S.auth.user;
+function showSignIn() {
+  if ($('#signin')) return;
+  const el = document.createElement('div');
+  el.id = 'signin'; el.className = 'signin';
+  document.body.appendChild(el);
+  let pick = null;
+  const draw = err => {
+    const staff = S.auth.staff;
+    el.innerHTML = `<div class="signin-card">
+      <div class="brand big"><b>NRRL</b><span>Billing</span></div>
+      ${!pick ? `<h2>Who is billing?</h2><div class="names">${staff.map(x => `<button type="button" data-id="${esc(x.id)}">${esc(x.name)}<small>${x.role === 'owner' ? 'Owner' : 'Staff'}</small></button>`).join('')}</div>
+        <p class="muted small">Same names and PINs as the NRRL Counter phone app. The owner adds people and chooses what each person can do in the phone app’s Staff tab.</p>`
+      : `<h2>${esc(pick.name)}</h2><form id="siForm" class="pinpad"><input type="password" id="siPin" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="PIN" aria-label="PIN">
+        <div class="err" id="siErr">${esc(err || '')}</div>
+        <div class="foot"><button type="button" class="btn" id="siBack">Back</button><button type="submit" class="btn accent">Sign in</button></div></form>`}
+    </div>`;
+    if (!pick) {
+      $$('[data-id]', el).forEach(b => b.addEventListener('click', () => { pick = staff.find(x => x.id === b.dataset.id); LS.set('lastUser', pick.id); draw(); }));
+    } else {
+      setTimeout(() => $('#siPin', el)?.focus(), 30);
+      $('#siBack', el).addEventListener('click', () => { pick = null; draw(); });
+      $('#siForm', el).addEventListener('submit', async e => {
+        e.preventDefault();
+        $('#siErr', el).textContent = 'Checking…';
+        try {
+          S.auth.user = await rpc('auth.login', pick.id, $('#siPin', el).value);
+          S.unlockedUntil = 0;
+          el.remove(); renderLock(); toast('Signed in as ' + S.auth.user.name);
+          buildBill(); show(can('bill') ? 'bill' : 'items');
+        } catch (err) { $('#siErr', el).textContent = err.message; $('#siPin', el).value = ''; beep(false); }
+      });
+    }
+  };
+  const last = S.auth.staff.find(x => x.id === LS.get('lastUser', null));
+  if (last) pick = last;
+  draw();
+}
+async function signOut(msg) {
+  await rpc('auth.logout').catch(() => {});
+  S.auth.user = null; S.unlockedUntil = 0;
+  closeModal(); renderLock();
+  if (msg) toast(msg, { err: true, ms: 6000 });
+  await loadAuth();
+  if (needSignIn()) showSignIn();
 }
 
 /* ================= modals ================= */
@@ -144,7 +250,8 @@ const modalOpen = () => !!$('#modals').children.length;
 /* ================= navigation & keys ================= */
 $('#nav').addEventListener('click', e => { const b = e.target.closest('[data-view]'); if (b) show(b.dataset.view); });
 async function show(v) {
-  if (v === 'settings' && !(await requireOwner('Settings need the owner PIN'))) return;
+  if (v === 'settings' && !(await requirePerm('settings', 'Settings need the owner'))) return;
+  if (v === 'sales' && !(await requirePerm('sales', 'Sales are switched off for you'))) return;
   S.view = v;
   $$('#nav [data-view]').forEach(b => b.dataset.view === v ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   for (const k of ['bill', 'items', 'sales', 'settings']) $('#v-' + k).hidden = k !== v;
@@ -173,12 +280,34 @@ document.addEventListener('keydown', e => {
   else if (k === 'F9') { e.preventDefault(); saveBill(true); }
   else if (k === 'F10') { e.preventDefault(); saveBill(false); }
   else if (e.ctrlKey && k.toLowerCase() === 'p') { e.preventDefault(); reprintLast(); }
+  else if (e.ctrlKey && /^[1-9]$/.test(k)) { const it = topItems(9)[+k - 1]; if (it) { e.preventDefault(); addItem(it); focusScan(); } }
   else if (e.altKey && /^[1-4]$/.test(k)) { e.preventDefault(); S.cart.payment = PAY[+k - 1][0]; saveCart(); renderTotals(); }
-  else if (document.activeElement === document.body && k.length === 1 && !e.ctrlKey && !e.altKey) { focusScan(); }
+  else if ((document.activeElement === document.body || /^(BUTTON|A)$/.test(document.activeElement?.tagName)) && k.length === 1 && !e.ctrlKey && !e.altKey) { focusScan(); }
 });
+/* A barcode gun types very fast and ends with Enter. If that lands in another box on the billing screen
+   (customer name, discount, a quantity), take it back out of that box and add the item instead. */
+let burst = { t: 0, s: '', el: null, val: '' };
+document.addEventListener('keydown', e => {
+  if (S.view !== 'bill' || modalOpen() || e.ctrlKey || e.altKey || e.metaKey) return;
+  const el = e.target;
+  if (!el || !/^(INPUT|TEXTAREA)$/.test(el.tagName) || el.id === 'scan') { burst.s = ''; return; }
+  const now = performance.now();
+  if (e.key.length === 1) {
+    if (now - burst.t > 45 || burst.el !== el) burst = { t: now, s: '', el, val: el.value };
+    burst.s += e.key; burst.t = now; return;
+  }
+  if (e.key === 'Enter' && burst.el === el && burst.s.length >= 4 && now - burst.t < 80) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    el.value = burst.val;
+    el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+    const code = burst.s; burst = { t: 0, s: '', el: null, val: '' };
+    handleEntry(code); focusScan();
+  }
+}, true);
 
 /* ================= billing screen ================= */
 function buildBill() {
+  if (!can('bill')) { $('#v-bill').innerHTML = `<div class="page"><div class="empty"><b>Billing is switched off for ${esc(S.auth.user ? S.auth.user.name : 'you')}</b>The owner can switch on “Make bills” in the phone app’s Staff tab.</div></div>`; return; }
   $('#v-bill').innerHTML = `
   <div class="bill">
     <div class="bill-left">
@@ -191,6 +320,7 @@ function buildBill() {
         <div class="seg" role="group" aria-label="Price list" id="modeSeg"><button type="button" data-mode="retail">Retail</button><button type="button" data-mode="wholesale">Wholesale</button></div>
       </div>
       <div class="hintline"><span><kbd>5*</kbd> before a scan = qty 5</span><span><kbd>+</kbd><kbd>−</kbd> change qty</span><span><kbd>Del</kbd> remove line</span><span><kbd>↑</kbd><kbd>↓</kbd> pick line</span><span><kbd>F4</kbd> type qty</span><span><kbd>F6</kbd> retail/wholesale</span><span><kbd>Ctrl+P</kbd> reprint last</span></div>
+      <div class="quick" id="quick" hidden></div>
       <div class="lines" id="linesWrap"><table class="grid" id="lines"></table></div>
     </div>
     <aside class="bill-right" id="totals"></aside>
@@ -204,10 +334,18 @@ function buildBill() {
   $('#modeSeg').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
   $('#lines').addEventListener('click', onLineClick);
   $('#lines').addEventListener('change', onLineChange);
+  $('#quick').addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (b) { addItem(S.items.get(b.dataset.code)); focusScan(); } });
+  renderQuick();
   $('#lines').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); focusScan(); } });
   $('#v-bill').addEventListener('mouseup', e => {
     if (!e.target.closest('input,select,textarea,button,a') && !window.getSelection().toString()) focusScan();
   });
+}
+function renderQuick() {
+  const el = $('#quick'); if (!el) return;
+  const top = topItems(9);
+  el.hidden = !top.length;
+  el.innerHTML = `<span class="lbl2">Often sold:</span>` + top.map((it, i) => `<button type="button" data-code="${esc(it.code)}" title="${esc(it.name)} — Ctrl+${i + 1}">${esc(it.name)}<kbd>^${i + 1}</kbd></button>`).join('');
 }
 function focusScan() { if (S.view === 'bill' && !modalOpen()) { const s = $('#scan'); if (s && document.activeElement !== s) s.focus(); } }
 function flashScan(ok) { const b = $('#scanbox'); b.classList.remove('flash-ok', 'flash-bad'); void b.offsetWidth; b.classList.add(ok ? 'flash-ok' : 'flash-bad'); clearTimeout(flashScan.t); flashScan.t = setTimeout(() => b.classList.remove('flash-ok', 'flash-bad'), 300); }
@@ -220,7 +358,7 @@ function renderSugg(v) {
   const box = $('#sugg');
   if (!sugg.length || findItem(q)) { box.hidden = true; return; }
   box.hidden = false;
-  box.innerHTML = sugg.map((it, i) => `<button type="button" data-code="${esc(it.code)}" aria-selected="${i === suggIdx}"><span class="nm">${esc(it.name)}</span><span class="num muted small">${esc(it.code)}</span><span class="num">${money(priceFor(it))}</span></button>`).join('');
+  box.innerHTML = sugg.map((it, i) => `<button type="button" data-code="${esc(it.code)}" aria-selected="${i === suggIdx}"><span class="nm">${hl(it.name, q)}</span><span class="num muted small">${esc(it.code)}</span><span class="num">${money(priceFor(it))}</span></button>`).join('');
 }
 function moveSugg(d) {
   if (!sugg.length) return;
@@ -270,6 +408,7 @@ function handleEntry(raw) {
 const priceFor = it => S.cart.mode === 'wholesale' && +it.wholesale > 0 ? +it.wholesale : +it.retail;
 const unitFor = it => S.cart.mode === 'wholesale' && +it.wholesale > 0 && it.wholesale_unit ? it.wholesale_unit : it.unit;
 function addItem(it, qty = 1) {
+  if (it) bumpFreq(it.code);
   if (!it) return;
   const L = S.cart.lines;
   let i = L.findIndex(l => l.code === it.code);
@@ -277,7 +416,7 @@ function addItem(it, qty = 1) {
   else { L.push({ code: it.code, name: it.name, unit: unitFor(it), gst: it.gst, rate: priceFor(it), listRate: true, qty: r2(qty) }); i = L.length - 1; }
   S.sel = i; saveCart(); renderCart(i);
   beep(true); flashScan(true);
-  if (it.stock != null && it.stock - L[i].qty < 0) toast(`${it.name}: only ${qf(it.stock)} ${it.unit} in stock`, { err: true, ms: 2500 });
+  if (can('stock') && it.stock != null && it.stock - L[i].qty < 0) toast(`${it.name}: only ${qf(it.stock)} ${it.unit} in stock`, { err: true, ms: 2500 });
 }
 function setMode(m) {
   S.cart.mode = m;
@@ -322,7 +461,7 @@ async function onLineChange(e) {
   const L = S.cart.lines, q = e.target.dataset.q, p = e.target.dataset.p;
   if (q != null) { const v = r2(e.target.value); if (v <= 0) L.splice(+q, 1); else L[+q].qty = v; }
   if (p != null) {
-    if (!(await requireOwner('Changing a rate needs the owner PIN'))) { renderCart(); return; }
+    if (!(await requirePerm('rate', 'Changing a rate needs the owner'))) { renderCart(); return; }
     L[+p].rate = Math.max(0, r2(e.target.value)); L[+p].listRate = false;
   }
   saveCart(); renderCart();
@@ -335,7 +474,7 @@ function totals() {
 }
 function renderCart(popIdx) {
   if (!$('#lines')) return;
-  const c = S.cart, canRate = !locked();
+  const c = S.cart, canRate = can('rate');
   $$('#modeSeg [data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === c.mode));
   if (!c.lines.length) {
     $('#lines').innerHTML = `<tbody><tr><td><div class="empty"><b>Ready to bill</b>${S.items.size ? 'Scan the first item, or type its name.' : 'Your item list is empty. Scan a barcode to add the item, or import your list from Items &amp; stock.'}</div></td></tr></tbody>`;
@@ -404,7 +543,7 @@ async function saveBill(print) {
     });
     S.lastBill = bill;
     for (const l of bill.lines) { const it = S.items.get(l.code); if (it && it.stock != null) it.stock = r2(it.stock - l.qty * (l.factor || 1)); }
-    S.cart = newCart(c); S.sel = 0; saveCart();
+    S.cart = newCart(c); S.sel = 0; saveCart(); renderQuick();
     renderCart(); focusScan();
     if (print) {
       toast(`Bill #${bill.bill_no} saved · ${money(bill.total)} · printing…`);
@@ -424,7 +563,8 @@ async function reprintLast() {
 /* ================= item form ================= */
 async function openItemForm(it, opts = {}) {
   const editing = !!(it && it.name != null);
-  if (editing && !(await requireOwner('Editing an item needs the owner PIN'))) return;
+  if (editing && !(await requirePerm('edit', 'Editing an item needs the owner'))) return;
+  if (!editing && !(await requirePerm('add', 'Adding items is switched off for you'))) return;
   const units = ['pcs', 'pkt', 'box', 'dozen', 'set', 'roll', 'kg', 'g', 'mtr', 'ltr', 'pair'];
   const unit = it?.unit || 'pcs';
   const m = openModal(`
@@ -498,18 +638,25 @@ function rowsText(n, across) {
   const rows = Math.ceil(n / across), blank = rows * across - n;
   return `${n} labels = ${rows} row${rows === 1 ? '' : 's'} of ${across}${blank ? ` · <b class="warn">${blank} label${blank === 1 ? '' : 's'} left blank</b>` : ' · no blanks'}`;
 }
-async function openLabels(it) {
+async function sizeChips() {
+  const z = await rpc('labels.sizes').catch(() => ({ list: [] }));
+  return z.list.length > 1 ? `<div class="sizes w" id="lSizes">${z.list.map(x => `<button type="button" data-size="${esc(x.id)}" aria-pressed="${x.id === z.active}"><b>${+x.w} × ${+x.h} mm</b><small>${+x.across} across</small></button>`).join('')}</div>` : '';
+}
+const logoTick = () => S.settings.label_logo ? `<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lLogo" ${S.settings.label_show_logo !== '0' ? 'checked' : ''}> Show logo</label>` : '';
+async function openLabels(it, keepCount) {
+  if (!(await requirePerm('labels', 'Printing labels is switched off for you'))) return;
   let info;
   try { info = await rpc('print.labelInfo', it.code); } catch (err) { toast(err.message, { err: true }); return; }
-  const across = info.across;
-  const def = across * Math.max(1, Math.ceil(Math.min(it.stock > 0 ? it.stock : 1, 300) / across));
+  const across = info.across, chips = await sizeChips();
+  const def = keepCount || across * Math.max(1, Math.ceil(Math.min(it.stock > 0 ? it.stock : 1, 300) / across));
   const m = openModal(`<h2>Print barcode labels</h2>
     <p><b>${esc(it.name)}</b> <span class="num muted">${esc(it.code)}</span></p>
     ${info.fits ? '' : `<div class="confirmbar" style="background:color-mix(in srgb,var(--warn) 14%,transparent)"><span><b>This code is too long for a ${esc(info.w)} mm label.</b> The bars come out too thin and scanners can’t read them. Give the item a short code like NR10023 and it will scan.</span><button type="button" class="btn" id="lShort">Use a short code</button></div>`}
     <div class="form2">
       <label class="f"><span>How many labels</span><input type="number" id="lCount" min="1" max="1000" value="${def}"></label>
-      <div class="f"><span class="lbl">Roll</span><div style="padding-top:8px">${across} across · ${esc(info.w)} × ${esc(info.h)} mm</div></div>
-<div class="w" style="display:flex;gap:18px;flex-wrap:wrap">
+      ${chips ? '' : `<div class="f"><span class="lbl">Roll</span><div style="padding-top:8px">${across} across · ${esc(info.w)} × ${esc(info.h)} mm</div></div>`}
+      ${chips ? `<div class="f w"><span class="lbl">Label size</span>${chips}</div>` : ''}
+<div class="w" style="display:flex;gap:18px;flex-wrap:wrap">${logoTick()}
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
       </div>
@@ -520,10 +667,15 @@ async function openLabels(it) {
     <div class="foot"><button type="button" class="btn" data-close>Close</button><button type="button" class="btn" id="lAdd">Add to label list</button><button type="button" class="btn accent" id="lGo">Print now</button></div>`);
   const cnt = () => Math.max(1, parseInt($('#lCount', m).value, 10) || 1);
   const upd = () => { $('#lRows', m).innerHTML = rowsText(cnt(), across); };
+  $('#lSizes', m)?.addEventListener('click', async e => {
+    const b = e.target.closest('[data-size]'); if (!b || b.getAttribute('aria-pressed') === 'true') return;
+    try { S.settings = await rpc('labels.useSize', b.dataset.size); } catch (err) { toast(err.message, { err: true }); return; }
+    const n = cnt(); m._onClose = null; closeModal(m); openLabels(it, n);
+  });
   upd(); $('#lCount', m).addEventListener('input', upd);
   setTimeout(() => { $('#lCount', m).focus(); $('#lCount', m).select(); }, 30);
   $('#lShort', m)?.addEventListener('click', async () => {
-    if (!(await requireOwner('Changing an item code needs the owner PIN'))) return;
+    if (!(await requirePerm('edit', 'Changing an item code needs the owner'))) return;
     try {
       const code = await rpc('items.nextCode');
       const saved = await rpc('items.save', { ...it, code }, it.code);
@@ -545,11 +697,12 @@ async function openLabels(it) {
   $('#lGo', m).addEventListener('click', go);
   $('#lCount', m).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
 }
-const showOpts = m => ({ retail: $('#lRetail', m).checked, wholesale: $('#lWs', m).checked });
+const showOpts = m => ({ retail: $('#lRetail', m).checked, wholesale: $('#lWs', m).checked, ...($('#lLogo', m) ? { logo: $('#lLogo', m).checked } : {}) });
 async function openLabelList() {
-  const across = Math.max(1, parseInt(S.settings.label_across, 10) || 1);
-  const m = openModal(`<h2>Label list</h2><div id="qBody"></div>
-    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">
+  if (!(await requirePerm('labels', 'Printing labels is switched off for you'))) return;
+  const across = Math.max(1, parseInt(S.settings.label_across, 10) || 1), chips = await sizeChips();
+  const m = openModal(`<h2>Label list</h2>${chips ? `<div class="f"><span class="lbl">Label size</span>${chips}</div>` : ''}<div id="qLong"></div><div id="qBody"></div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">${logoTick()}
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
     </div><div class="err" id="qErr"></div>
@@ -566,6 +719,28 @@ async function openLabelList() {
     $('#qFill', m)?.addEventListener('click', () => { S.labelQ[S.labelQ.length - 1].count += blank; saveQ(); draw(); });
   };
   draw();
+  $('#lSizes', m)?.addEventListener('click', async e => {
+    const b = e.target.closest('[data-size]'); if (!b || b.getAttribute('aria-pressed') === 'true') return;
+    try { S.settings = await rpc('labels.useSize', b.dataset.size); } catch (err) { toast(err.message, { err: true }); return; }
+    m._onClose = null; closeModal(m); openLabelList();
+  });
+  // codes that are too long to scan on this label size: offer short codes for all of them at once
+  (async () => {
+    const long = [];
+    for (const q of S.labelQ) { try { const inf = await rpc('print.labelInfo', q.code); if (!inf.fits) long.push(q.code); } catch (e) {} }
+    if (!long.length || !$('#qLong', m)) return;
+    $('#qLong', m).innerHTML = `<div class="confirmbar" style="background:color-mix(in srgb,var(--warn) 14%,transparent)"><span><b>${long.length} item${long.length === 1 ? ' has a code' : 's have codes'} too long to scan on this label</b> (${long.slice(0, 3).map(c => esc(S.items.get(c)?.name || c)).join(', ')}${long.length > 3 ? '…' : ''}). Short codes like NR10023 scan first time.</span><button type="button" class="btn" id="qFix">Give them short codes</button></div>`;
+    $('#qFix', m).addEventListener('click', async () => {
+      if (!(await requirePerm('edit', 'Changing item codes needs the owner'))) return;
+      try {
+        const ch = await rpc('items.fixCodes', long);
+        await reloadItems();
+        for (const c of ch) S.labelQ.forEach(q => { if (q.code === c.from) q.code = c.to; });
+        saveQ(); $('#qLong', m).innerHTML = ''; draw();
+        toast(`${ch.length} item${ch.length === 1 ? '' : 's'} now have short codes`);
+      } catch (err) { toast(err.message, { err: true }); }
+    });
+  })();
   $('#qBody', m).addEventListener('change', e => { const i = e.target.dataset.qi; if (i == null) return; S.labelQ[+i].count = Math.max(0, parseInt(e.target.value, 10) || 0); S.labelQ = S.labelQ.filter(q => q.count > 0); saveQ(); draw(); });
   $('#qBody', m).addEventListener('click', e => { const b = e.target.closest('[data-qrm]'); if (!b) return; S.labelQ.splice(+b.dataset.qrm, 1); saveQ(); draw(); });
   $('#qClear', m).addEventListener('click', () => { S.labelQ = []; saveQ(); draw(); });
@@ -577,7 +752,7 @@ async function openLabelList() {
 }
 
 async function openStockIn(it) {
-  if (!(await requireOwner('Adding stock needs the owner PIN'))) return;
+  if (!(await requirePerm('edit', 'Adding stock needs the owner'))) return;
   const hist = await rpc('items.history', it.code).catch(() => []);
   const KIND = { sale: 'Sold', purchase: 'Stock in', adjust: 'Adjusted', cancel: 'Bill cancelled', opening: 'Opening stock' };
   const m = openModal(`<h2>Add stock</h2>
@@ -596,6 +771,65 @@ async function openStockIn(it) {
       const saved = await rpc('items.stockIn', it.code, $('#sQty', m).value, $('#sNote', m).value);
       S.items.set(saved.code, saved); closeModal(m); toast(`${saved.name}: stock now ${qf(saved.stock)}`); renderItemRows();
     } catch (err) { $('#sErr', m).textContent = err.message; }
+  });
+}
+
+/* ================= logo for labels =================
+   The picture becomes pure black and white (thermal printers can't print grey), trimmed to the logo. */
+function pickLogo() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/png,image/jpeg,image/webp,image/bmp,image/gif';
+  inp.addEventListener('change', () => {
+    const f = inp.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { const img = new Image(); img.onload = () => logoDialog(img); img.onerror = () => toast('That file is not a picture.', { err: true }); img.src = rd.result; };
+    rd.readAsDataURL(f);
+  });
+  inp.click();
+}
+function logoBW(img, level, maxH = 160) {
+  const sc = Math.min(1, 600 / img.width, (maxH * 3) / img.height);
+  const W = Math.max(1, Math.round(img.width * sc)), H = Math.max(1, Math.round(img.height * sc));
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d', { willReadFrequently: true }); x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.drawImage(img, 0, 0, W, H);
+  const d = x.getImageData(0, 0, W, H).data;
+  let x0 = W, y0 = H, x1 = -1, y1 = -1;
+  const blk = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const l = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    if (l < level) { blk[i] = 1; const px = i % W, py = (i / W) | 0; if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py; }
+  }
+  if (x1 < 0) return null;
+  // trim, then scale to the stored height
+  const cw = x1 - x0 + 1, ch = y1 - y0 + 1, k = Math.min(1, maxH / ch, 480 / cw);
+  const w = Math.max(1, Math.round(cw * k)), h = Math.max(1, Math.round(ch * k)), wb = Math.ceil(w / 8);
+  const bits = new Uint8Array(wb * h);
+  const o = document.createElement('canvas'); o.width = w; o.height = h;
+  const ox = o.getContext('2d'), od = ox.createImageData(w, h);
+  for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++) {
+    const sx = x0 + Math.min(cw - 1, Math.floor(xx / k)), sy = y0 + Math.min(ch - 1, Math.floor(y / k));
+    const b = blk[sy * W + sx], j = (y * w + xx) * 4;
+    od.data[j] = od.data[j + 1] = od.data[j + 2] = b ? 0 : 255; od.data[j + 3] = b ? 255 : 0;
+    if (b) bits[y * wb + (xx >> 3)] |= 0x80 >> (xx & 7);
+  }
+  ox.putImageData(od, 0, 0);
+  let bin = ''; for (let i = 0; i < bits.length; i++) bin += String.fromCharCode(bits[i]);
+  return { png: o.toDataURL('image/png'), bits: { w, h, data: btoa(bin) } };
+}
+function logoDialog(img) {
+  let level = 150, cur = null;
+  const m = openModal(`<h2>Logo for labels</h2>
+    <p class="muted">Labels print in black only. Move the slider until the logo looks clear and solid.</p>
+    <div style="display:flex;justify-content:center;background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px"><img id="lgPrev" alt="Logo preview" style="max-width:100%;max-height:140px;image-rendering:pixelated"></div>
+    <label class="f"><span>Darkness</span><input type="range" id="lgLvl" min="40" max="240" value="${level}"></label>
+    <div class="err" id="lgErr"></div>
+    <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="lgSave">Use this logo</button></div>`);
+  const draw = () => { cur = logoBW(img, level); $('#lgPrev', m).src = cur ? cur.png : ''; $('#lgErr', m).textContent = cur ? '' : 'Nothing dark enough — move the slider right.'; };
+  draw();
+  $('#lgLvl', m).addEventListener('input', e => { level = +e.target.value; draw(); });
+  $('#lgSave', m).addEventListener('click', async () => {
+    if (!cur) return;
+    try { S.settings = await rpc('labels.setLogo', cur.png, cur.bits); closeModal(m); toast('Logo added to labels'); if (S.view === 'settings') renderSettings(); }
+    catch (err) { $('#lgErr', m).textContent = err.message; }
   });
 }
 
@@ -636,6 +870,7 @@ function renderItems() {
 }
 document.addEventListener('keydown', e => { if (e.key === 'Insert' && S.view === 'items' && !modalOpen()) { e.preventDefault(); openItemForm(null); } });
 function stockChip(it) {
+  if (!can('stock')) return '<span class="chip">hidden</span>';
   if (it.stock == null) return '<span class="chip">—</span>';
   if (it.stock <= 0) return `<span class="chip out">${qf(it.stock)} ${esc(it.unit)}</span>`;
   if (it.stock <= lowLevel(it)) return `<span class="chip low">${qf(it.stock)} ${esc(it.unit)}</span>`;
@@ -706,7 +941,7 @@ function rowsToItems(rows) {
   }));
 }
 async function importCsv() {
-  if (S.items.size && !(await requireOwner('Importing items needs the owner PIN'))) return;
+  if (S.items.size && !(await requirePerm('edit', 'Importing items needs the owner'))) return;
   const m = openModal(`<h2>Import items from Excel / CSV</h2>
     <p class="muted">In Excel, use <b>File → Save As → CSV</b>. The first row can be headings like <span class="num">Code, Name, Price, Wholesale, Stock, Unit, GST, HSN</span>. Items that already exist are updated; a blank stock keeps the current stock. Items with no barcode: leave Code blank and the app makes one.</p>
     <div class="err" id="iErr"></div>
@@ -760,7 +995,7 @@ function rangeDates(r) {
 async function renderSales(reload = true) {
   const el = $('#v-sales');
   if (reload) {
-    if (sales.range !== 'today' && locked() && !(await requireOwner('Older sales need the owner PIN'))) sales.range = 'today';
+    if (sales.range !== 'today' && !(await requirePerm('reports', 'Older sales need the owner'))) sales.range = 'today';
     [sales.from, sales.to] = rangeDates(sales.range);
     try {
       [sales.sum, sales.bills, sales.items] = await Promise.all([rpc('reports.summary', sales.from, sales.to), rpc('bills.list', sales.from, sales.to), rpc('reports.items', sales.from, sales.to)]);
@@ -830,7 +1065,7 @@ async function openBill(id) {
     </div>
     <div class="foot">${b.cancelled ? '' : '<button type="button" class="btn danger left" id="bCancel">Cancel bill</button>'}<button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="bPrint">Reprint</button></div>`, { wide: true });
   $('#bPrint', m).addEventListener('click', () => rpc('print.receipt', b.id, true).then(() => toast('Sent to printer')).catch(err => { $('#bErr', m).textContent = err.message; }));
-  $('#bCancel', m)?.addEventListener('click', async () => { if (await requireOwner('Cancelling a bill needs the owner PIN')) $('#bConfirm', m).hidden = false; });
+  $('#bCancel', m)?.addEventListener('click', async () => { if (await requirePerm('cancel', 'Cancelling a bill needs the owner')) $('#bConfirm', m).hidden = false; });
   $('#bNo', m)?.addEventListener('click', () => { $('#bConfirm', m).hidden = true; });
   $('#bYes', m)?.addEventListener('click', async () => {
     try { await rpc('bills.cancel', b.id); await reloadItems(); closeModal(m); toast(`Bill #${b.bill_no} cancelled, stock restored`); renderSales(); }
@@ -841,7 +1076,7 @@ async function openBill(id) {
 /* ================= settings ================= */
 async function renderSettings() {
   const s = S.settings;
-  const [info, backups] = await Promise.all([rpc('app.info'), rpc('backup.list').catch(() => [])]);
+  const [info, backups, sizes] = await Promise.all([rpc('app.info'), rpc('backup.list').catch(() => []), rpc('labels.sizes').catch(() => ({ list: [], active: '' }))]);
   if (!S.printers) S.printers = await rpc('printers.list').catch(() => []);
   const opt = (sel) => [`<option value="">Windows default printer</option>`, ...S.printers.map(p => `<option value="${esc(p.name)}"${p.name === sel ? ' selected' : ''}>${esc(p.label)}${p.isDefault ? ' (default)' : ''}</option>`)].join('');
   $('#v-settings').innerHTML = `<div class="settings"><h1>Settings</h1><div class="cards">
@@ -866,6 +1101,24 @@ async function renderSettings() {
       <div class="toolbar"><button type="button" class="btn" id="testPrint">Print test receipt</button><button type="button" class="btn" id="prevPrint">Preview</button><button type="button" class="btn" id="refPrinters">Refresh printer list</button></div></section>
     <section class="card"><h2>Barcode labels</h2>
       <p class="muted">For items without a barcode: click <b>Make code</b> on the item, then print labels and stick them on the packet or bin.</p>
+      <div><div class="lbl" style="margin-bottom:6px">Label sizes — click one to use and adjust it</div>
+        <div class="sizes" id="sizeList">${sizes.list.map(z => `<button type="button" data-size="${esc(z.id)}" aria-pressed="${z.id === sizes.active}"><b>${+z.w} × ${+z.h} mm</b><small>${+z.across} across${z.id === sizes.active ? ' · in use' : ''}</small></button>`).join('')}
+          <button type="button" data-size="new"><b>+ Add size</b><small>another roll</small></button></div>
+        <div class="form2" id="newSize" hidden style="margin-top:10px">
+          <label class="f"><span>Width (mm)</span><input type="number" step="0.5" id="nzW" placeholder="50"></label>
+          <label class="f"><span>Height (mm)</span><input type="number" step="0.5" id="nzH" placeholder="25"></label>
+          <label class="f"><span>Labels across</span><select id="nzA">${[1, 2, 3, 4].map(n => `<option>${n}</option>`).join('')}</select></label>
+          <div class="f" style="justify-content:flex-end;flex-direction:row;gap:8px;align-items:flex-end"><button type="button" class="btn" id="nzCancel">Cancel</button><button type="button" class="btn accent" id="nzAdd">Add size</button></div>
+        </div>
+        ${sizes.list.length > 1 ? '<div class="toolbar" style="margin-top:8px"><button type="button" class="btn sm danger" id="sizeDel">Remove the size in use</button></div>' : ''}
+      </div>
+      <div><div class="lbl" style="margin-bottom:6px">Shop logo on labels</div>
+        <div class="logo-prev"><div class="box">${s.label_logo ? `<img src="${s.label_logo}" alt="Logo">` : '<span class="muted small">No logo</span>'}</div>
+          <div class="toolbar"><button type="button" class="btn" id="logoPick">${s.label_logo ? 'Change logo…' : 'Add logo…'}</button>${s.label_logo ? '<button type="button" class="btn danger" id="logoDel">Remove</button>' : ''}</div></div>
+        ${s.label_logo ? `<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:8px"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="s_label_show_logo" ${s.label_show_logo !== '0' ? 'checked' : ''}> Print logo on labels</label>
+          <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="s_label_logo_invert" ${s.label_logo_invert === '1' ? 'checked' : ''}> Logo prints as a negative (direct printing only) — tick to fix</label></div>` : ''}
+        <p class="muted small">A PNG or JPG of your logo. It is turned into black and white for the label printer; you can adjust how dark it comes out.</p>
+      </div>
       <div class="form2">
         <label class="f w"><span>Label printer</span><select id="s_label_printer">${opt(s.label_printer).replace('Windows default printer', 'Same as receipt printer')}</select></label>
         <label class="f w"><span>How to print labels</span><select id="s_label_mode"><option value="tspl"${s.label_mode === 'tspl' ? ' selected' : ''}>Send commands to the label printer (sharpest — TSC, TVS, Xprinter, most barcode printers)</option><option value="windows"${s.label_mode !== 'tspl' ? ' selected' : ''}>Through the Windows printer driver (any printer)</option></select></label>
@@ -901,7 +1154,7 @@ async function renderSettings() {
     <section class="card" id="sheetCard"><h2>Google Sheet — see sales live on your phone</h2>
       <div id="sheetBody"><p class="muted">Loading…</p></div></section>
     <section class="card"><h2>Owner PIN</h2>
-      <p class="muted">With a PIN set, staff can bill and add new items, but these need the PIN: changing prices or rates, editing or removing items, adding stock, cancelling bills, sales older than today, and Settings.</p>
+      <p class="muted">${S.auth.linked ? 'This laptop is linked, so everyone signs in with their own phone-app PIN and you choose what each person can do in the phone app’s <b>Staff</b> tab. Your PIN there also unlocks this laptop. A separate laptop PIN below is optional.' : 'With a PIN set, staff can bill and add new items, but these need the PIN: changing prices or rates, editing or removing items, adding stock, cancelling bills, sales older than today, and Settings. Link the phone app (above) to give each person their own PIN and switches.'}</p>
       <div class="form2">
         ${s.hasPin ? '<label class="f"><span>Current PIN</span><input type="password" id="pOld" inputmode="numeric" maxlength="8"></label>' : ''}
         <label class="f"><span>${s.hasPin ? 'New PIN (blank = remove PIN)' : 'New PIN (4–8 digits)'}</span><input type="password" id="pNew" inputmode="numeric" maxlength="8"></label>
@@ -914,6 +1167,7 @@ async function renderSettings() {
   const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density', 'wcode_prefix', 'wcode_mult'];
   const collect = () => {
     const o = {}; for (const k of keys) o[k] = $('#s_' + k).value;
+    if ($('#s_label_show_logo')) { o.label_show_logo = $('#s_label_show_logo').checked ? '1' : '0'; o.label_logo_invert = $('#s_label_logo_invert').checked ? '1' : '0'; }
     o.label_price = $('#s_label_price').checked ? '1' : '0'; o.label_flip = $('#s_label_flip').checked ? '1' : '0'; o.label_wcode = $('#s_label_wcode').checked ? '1' : '0';
     return o;
   };
@@ -937,6 +1191,22 @@ async function renderSettings() {
   });
   $('#testLabel').addEventListener('click', async () => { if (!(await save(true))) return; rpc('print.testLabel').then(() => toast('Test row sent to label printer')).catch(err => toast(err.message, { err: true, ms: 9000 })); });
   $('#refPrinters').addEventListener('click', async () => { S.printers = await rpc('printers.list').catch(() => []); await save(true); renderSettings(); });
+  $('#sizeList').addEventListener('click', async e => {
+    const b = e.target.closest('[data-size]'); if (!b) return;
+    if (b.dataset.size === 'new') { $('#newSize').hidden = false; $('#nzW').focus(); return; }
+    if (!(await save(true))) return;
+    try { S.settings = await rpc('labels.useSize', b.dataset.size); renderSettings(); toast('Label size changed'); } catch (err) { toast(err.message, { err: true }); }
+  });
+  $('#nzCancel').addEventListener('click', () => { $('#newSize').hidden = true; });
+  $('#nzAdd').addEventListener('click', async () => {
+    if (!(await save(true))) return;
+    try { S.settings = await rpc('labels.addSize', { w: $('#nzW').value, h: $('#nzH').value, across: $('#nzA').value }); renderSettings(); toast('Label size added and in use'); } catch (err) { toast(err.message, { err: true }); }
+  });
+  $('#sizeDel')?.addEventListener('click', async () => {
+    try { S.settings = await rpc('labels.removeSize', sizes.active); renderSettings(); toast('Label size removed'); } catch (err) { toast(err.message, { err: true }); }
+  });
+  $('#logoPick').addEventListener('click', async () => { if (!(await save(true))) return; pickLogo(); });
+  $('#logoDel')?.addEventListener('click', async () => { S.settings = await rpc('labels.setLogo', '', null); renderSettings(); toast('Logo removed'); });
   $('#pickExtra').addEventListener('click', async () => { const p = await rpc('backup.chooseExtra'); if (p) { S.settings = await rpc('settings.get'); renderSettings(); toast('Backups will also be copied to ' + p); } });
   $('#clearExtra')?.addEventListener('click', async () => { S.settings = await rpc('settings.save', { backup_extra: '' }); renderSettings(); });
   $('#bkNow').addEventListener('click', async () => {
@@ -1050,6 +1320,16 @@ window.api.on && window.api.on('data-changed', async ch => {
   if (S.view === 'items') renderItemRows();
   if (S.view === 'sales' && ch.bills) renderSales();
   if (ch.bills) toast(`${ch.bills} new bill${ch.bills === 1 ? '' : 's'} from the phone app`);
+  if (ch.staff) {
+    const had = S.auth.user, before = JSON.stringify(had && [had.role, had.perms]);
+    await loadAuth();
+    if (had) {
+      const me = await rpc('auth.refresh').catch(() => null);
+      if (!me) { signOut(`${had.name} was blocked by the owner.`); return; }
+      S.auth.user = me;
+      if (before !== JSON.stringify([me.role, me.perms])) { toast('Your access was changed by the owner'); renderLock(); buildBill(); refreshView(); }
+    } else if (needSignIn()) showSignIn();
+  }
 });
 async function init() {
   try {
@@ -1059,7 +1339,9 @@ async function init() {
   } catch (err) { document.body.innerHTML = `<div class="empty"><b>NRRL Billing could not start</b>${esc(err.message)}</div>`; return; }
   // keep cart lines in sync with any price changes since last time
   for (const l of S.cart.lines) { const it = S.items.get(l.code); if (it) { l.name = it.name; l.unit = unitFor(it); l.gst = it.gst; if (l.listRate !== false) l.rate = priceFor(it); } }
+  await loadAuth();
   buildBill(); renderLock(); renderBackupState();
+  if (needSignIn()) showSignIn();
   setInterval(renderBackupState, 5 * 60e3);
   window.addEventListener('focus', () => focusScan());
   show('bill');

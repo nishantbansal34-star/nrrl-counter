@@ -55,6 +55,14 @@ const DEFAULTS = {
   label_gap: '2',
   label_shift: '0',
   label_bar: '',
+  label_sizes: '',
+  label_size: '',
+  label_logo: '',
+  label_logo_bits: '',
+  label_show_logo: '1',
+  label_logo_invert: '0',
+  staff_cache: '',
+  staff_pins: '',
   low_stock: '5',
   backup_extra: '',
   owner_pin: '',
@@ -62,7 +70,7 @@ const DEFAULTS = {
   next_code: '10001',
 };
 const EDITABLE = new Set(['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'printer', 'paper', 'print_margin', 'font_size',
-  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
+  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'label_show_logo', 'label_logo_invert', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
 
 class Store {
   constructor(file) {
@@ -111,6 +119,7 @@ class Store {
     `);
     const addCol = (t, c, def) => { if (!this.db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) this.db.exec(`alter table ${t} add column ${c} ${def}`); };
     addCol('items', 'wholesale_unit', "text not null default ''");
+    addCol('bills', 'staff', "text not null default ''");
     addCol('items', 'wholesale_qty', 'real not null default 1');
     addCol('bill_lines', 'factor', 'real not null default 1');
     const ins = this.db.prepare('insert or ignore into settings(key,value) values(?,?)');
@@ -125,6 +134,7 @@ class Store {
     const o = {};
     for (const r of this.db.prepare('select key,value from settings').all()) o[r.key] = r.value;
     o.hasPin = !!o.owner_pin; delete o.owner_pin;
+    delete o.staff_pins;
     return o;
   }
   saveSettings(obj) {
@@ -140,8 +150,88 @@ class Store {
         if (k === 'paper' && !['58', '80'].includes(val)) val = '80';
         this.setSetting(k, val);
       }
+      this._syncLabelSize();
     })();
     return this.getSettings();
+  }
+  /* ---------- label sizes: several rolls saved, one in use ---------- */
+  labelSizes() {
+    let list = [];
+    try { list = JSON.parse(this.getSetting('label_sizes') || '[]'); } catch (e) {}
+    if (!Array.isArray(list) || !list.length) {
+      const g = k => this.getSetting(k);
+      const cur = { id: 's1', w: +g('label_w') || 50, h: +g('label_h') || 25, across: +g('label_across') || 1, gap: g('label_gap'), vgap: g('label_vgap'), shift: g('label_shift') };
+      list = [cur];
+      let n = 2;
+      for (const [w, h, across, gap] of [[38, 25, 3, '2'], [50, 25, 2, '2'], [50, 25, 1, '0'], [100, 50, 1, '0']]) {
+        if (!list.some(x => +x.w === w && +x.h === h && +x.across === across)) list.push({ id: 's' + n++, w, h, across, gap, vgap: '2', shift: '0' });
+      }
+      this.setSetting('label_sizes', JSON.stringify(list));
+      this.setSetting('label_size', cur.id);
+    }
+    return list;
+  }
+  labelSizeName(z) { return `${+z.w}×${+z.h} mm · ${+z.across} across`; }
+  useLabelSize(id) {
+    const list = this.labelSizes(), z = list.find(x => x.id === id);
+    if (!z) throw new Error('That label size no longer exists.');
+    this.db.transaction(() => {
+      this.setSetting('label_w', z.w); this.setSetting('label_h', z.h); this.setSetting('label_across', z.across);
+      this.setSetting('label_gap', z.gap ?? ''); this.setSetting('label_vgap', z.vgap ?? ''); this.setSetting('label_shift', z.shift ?? '');
+      this.setSetting('label_size', z.id);
+    })();
+    return this.getSettings();
+  }
+  addLabelSize(z) {
+    const list = this.labelSizes();
+    const w = +z.w, h = +z.h, across = Math.max(1, Math.min(4, parseInt(z.across, 10) || 1));
+    if (!(w >= 15 && w <= 120) || !(h >= 10 && h <= 120)) throw new Error('Width and height must be between 15 and 120 mm.');
+    const ex = list.find(x => +x.w === w && +x.h === h && +x.across === across);
+    if (ex) return this.useLabelSize(ex.id);
+    const id = 's' + (Math.max(0, ...list.map(x => parseInt(String(x.id).slice(1), 10) || 0)) + 1);
+    list.push({ id, w, h, across, gap: across > 1 ? String(z.gap ?? 2) : '0', vgap: '2', shift: '0' });
+    this.setSetting('label_sizes', JSON.stringify(list));
+    return this.useLabelSize(id);
+  }
+  removeLabelSize(id) {
+    let list = this.labelSizes();
+    if (list.length <= 1) throw new Error('Keep at least one label size.');
+    list = list.filter(x => x.id !== id);
+    this.setSetting('label_sizes', JSON.stringify(list));
+    if (this.getSetting('label_size') === id) return this.useLabelSize(list[0].id);
+    return this.getSettings();
+  }
+  // the settings screen edits the size in use; keep the saved list in step
+  _syncLabelSize() {
+    const list = this.labelSizes(), id = this.getSetting('label_size');
+    const z = list.find(x => x.id === id); if (!z) return;
+    const g = k => this.getSetting(k);
+    Object.assign(z, { w: +g('label_w') || z.w, h: +g('label_h') || z.h, across: +g('label_across') || 1, gap: g('label_gap'), vgap: g('label_vgap'), shift: g('label_shift') });
+    this.setSetting('label_sizes', JSON.stringify(list));
+  }
+  setLabelLogo(png, bits) {
+    if (png && !/^data:image\/png;base64,/.test(png)) throw new Error('Logo must be a picture.');
+    if (png && png.length > 600000) throw new Error('Logo picture is too big. Use a smaller image.');
+    this.setSetting('label_logo', png || ''); this.setSetting('label_logo_bits', bits ? JSON.stringify(bits) : '');
+    if (png) this.setSetting('label_show_logo', '1');
+    return this.getSettings();
+  }
+  /* ---------- staff (from the phone app's Staff list, when this laptop is linked) ---------- */
+  staffList() { try { return JSON.parse(this.getSetting('staff_cache') || '[]'); } catch (e) { return []; } }
+  cacheStaff(list) { this.setSetting('staff_cache', JSON.stringify((list || []).map(x => ({ id: x.id, name: x.name, role: x.role, active: !!x.active, perms: x.perms || {} })))); }
+  // after a PIN is checked online once, the laptop can check it again without internet
+  rememberStaffPin(id, pin) {
+    let m = {}; try { m = JSON.parse(this.getSetting('staff_pins') || '{}'); } catch (e) {}
+    const salt = crypto.randomBytes(16).toString('hex');
+    m[id] = salt + ':' + crypto.scryptSync(String(pin), salt, 32).toString('hex');
+    this.setSetting('staff_pins', JSON.stringify(m));
+  }
+  checkStaffPin(id, pin) {
+    let m = {}; try { m = JSON.parse(this.getSetting('staff_pins') || '{}'); } catch (e) {}
+    if (!m[id]) return null; // never signed in here
+    const [salt, hash] = m[id].split(':');
+    const h = crypto.scryptSync(String(pin || ''), salt, 32).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(hash, 'hex'));
   }
   hasPin() { return !!this.getSetting('owner_pin'); }
   checkPin(pin) {
@@ -309,8 +399,8 @@ class Store {
       const billNo = prefix + n;
       this.setSetting('next_bill', String(n + 1));
       const now = nowLocal();
-      const info = this.db.prepare(`insert into bills(bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst)
-        values(?,?,?,?,?,?,?,?,?,?,?,?)`).run(billNo, now, mode, payment, String(p.customer || '').trim(), String(p.phone || '').trim(), out.length, r2(qty), sub, disc, total, gst);
+      const info = this.db.prepare(`insert into bills(bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst,staff)
+        values(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(billNo, now, mode, payment, String(p.customer || '').trim(), String(p.phone || '').trim(), out.length, r2(qty), sub, disc, total, gst, String(p.staff || '').slice(0, 60));
       const bid = info.lastInsertRowid;
       const insL = this.db.prepare('insert into bill_lines(bill_id,code,name,unit,hsn,gst,qty,rate,amount,factor) values(?,?,?,?,?,?,?,?,?,?)');
       const dec = this.db.prepare('update items set stock=round(stock-?,2) where code=? and stock is not null');

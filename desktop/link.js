@@ -80,6 +80,13 @@ function createLink(getStore, onChange) {
     st.setSetting('link_code', code || '');
     if (code && code !== 'L1' && !st.getSetting('bill_prefix')) st.setSetting('bill_prefix', code + '-');
   }
+  let lastStaff = 0;
+  async function syncStaff(st, key) {
+    const before = st.getSetting('staff_cache');
+    st.cacheStaff(await rpc('counter_dev_staff', { p_key: key }));
+    lastStaff = Date.now();
+    if (before !== st.getSetting('staff_cache')) onChange({ staff: true });
+  }
   async function tick() {
     const st = getStore();
     if (!st || state.busy) return;
@@ -90,6 +97,7 @@ function createLink(getStore, onChange) {
       if (!st.getSetting('link_code')) { try { useCode(st, (await rpc('counter_dev_info', { p_key: key })).code); } catch (e) { if (e.code === 'DEVICE_UNLINKED') throw e; } }
       await pushQueue(st, key);
       await pull(st, key);
+      if (Date.now() - lastStaff > 30000) await syncStaff(st, key);
       state.lastOk = new Date().toISOString(); state.lastError = '';
     } catch (e) {
       state.lastError = e.message;
@@ -127,9 +135,34 @@ function createLink(getStore, onChange) {
       st.setSetting('link_items_at', ''); st.setSetting('link_bills_after', '0');
       progress && progress('Bringing in items and bills from the phone app…');
       await pull(st, key);
+      try { await syncStaff(st, key); st.rememberStaffPin(staffId, pin); } catch (e) {}
       state.lastOk = new Date().toISOString(); state.lastError = '';
       return { items: items.length, bills: ids.length };
     },
+    /* Sign a person in on this laptop with their phone-app PIN. Checked online when possible;
+       without internet, a PIN that already worked on this laptop is accepted. */
+    async staffLogin(staffId, pin) {
+      const st = getStore(), key = st.getSetting('link_key');
+      const cached = st.staffList().find(x => x.id === staffId);
+      try {
+        if (!key) throw Object.assign(new Error('offline'), { net: true });
+        const r = await rpc('counter_dev_login', { p_key: key, p_staff: staffId, p_pin: String(pin || '') });
+        st.rememberStaffPin(staffId, pin);
+        const list = st.staffList(); const i = list.findIndex(x => x.id === r.id);
+        const me = { id: r.id, name: r.name, role: r.role, active: true, perms: r.perms || {} };
+        if (i >= 0) list[i] = me; else list.push(me);
+        st.cacheStaff(list);
+        return me;
+      } catch (e) {
+        if (!e.net) throw e;
+        if (!cached || !cached.active) throw new Error('This person is blocked.');
+        const ok = st.checkStaffPin(staffId, pin);
+        if (ok === null) throw new Error('No internet. The first sign-in on this laptop needs internet; after that it works offline.');
+        if (!ok) throw new Error('Wrong PIN.');
+        return cached;
+      }
+    },
+    syncStaff: async () => { const st = getStore(); if (st.getSetting('link_key')) await syncStaff(st, st.getSetting('link_key')); return st.staffList(); },
     unlink() { const st = getStore(); st.setSetting('link_key', ''); st.linkClear(); },
   };
 }

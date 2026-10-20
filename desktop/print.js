@@ -156,6 +156,9 @@ function labelRates(item, s) {
   }
   return { retail, ws };
 }
+/* The shop logo on a label: a black-and-white picture made when it was added in Settings. */
+const logoOn = s => !!(s.label_logo && s.label_show_logo !== '0');
+const logoMm = s => { const { h } = labelSize(s); return Math.max(3.5, Math.min(10, h * 0.2)); };
 function labelCell(item, s, bc, xMm) {
   const showPrice = s.label_price !== '0';
   if (!item) return `<div class="lab" style="left:${xMm.toFixed(3)}mm"></div>`;
@@ -165,7 +168,7 @@ function labelCell(item, s, bc, xMm) {
   const vw = Math.round(bc.widthMm * bc.dpm);
   const rects = bc.bars.map(([x, bw]) => `<rect x="${x * bc.dots}" y="0" width="${bw * bc.dots}" height="100"/>`).join('');
   return `<div class="lab" style="left:${xMm.toFixed(3)}mm">
-      <div class="nm">${esc(item.name)}</div>
+      ${logoOn(s) ? `<div class="hd"><img class="logo" src="${s.label_logo}" alt=""><div class="nm">${esc(item.name)}</div></div>` : `<div class="nm">${esc(item.name)}</div>`}
       <div class="bc"><svg class="bars" style="left:${(absLeft - xMm).toFixed(4)}mm;width:${bc.widthMm.toFixed(4)}mm" viewBox="0 0 ${vw} 100" preserveAspectRatio="none" shape-rendering="crispEdges" fill="#000">${rects}</svg></div>
       <div class="code">${esc(item.code)}</div>
       ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}
@@ -176,21 +179,25 @@ function labelsHTML(list, s, bcs) {
   const { w, h, across, gap, shift, pageW } = labelSize(s);
   const rows = [];
   for (let i = 0; i < list.length; i += across) rows.push(list.slice(i, i + across));
-  const small = h < 22 || w < 40;
+  const small = h < 22 || w < 40, big = h >= 40 && w >= 60;
+  const fz = (sm, md, bg) => small ? sm : big ? bg : md;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     @page{size:${pageW}mm ${h}mm;margin:0}
     *{box-sizing:border-box}
     html,body{margin:0;padding:0;background:#fff;color:#000;font-family:"Segoe UI",Arial,sans-serif}
     .pg{position:relative;width:${pageW}mm;height:${h}mm;overflow:hidden;page-break-after:always;break-after:page}
     .pg:last-child{page-break-after:auto;break-after:auto}
-    .lab{position:absolute;top:0;width:${w}mm;height:${h}mm;padding:${small ? .6 : 1}mm 0 ${small ? .4 : .8}mm;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
-    .nm{font-size:${small ? 6.5 : 8}pt;font-weight:700;line-height:1.1;max-height:1.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 1.5mm}
+    .lab{position:absolute;top:0;width:${w}mm;height:${h}mm;padding:${fz(.6, 1, 2.5)}mm 0 ${fz(.4, .8, 2)}mm;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
+    .nm{font-size:${fz(6.5, 8, 13)}pt;font-weight:700;line-height:1.1;max-height:1.15em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 1.5mm}
     .bc{flex:1;min-height:0;position:relative;margin:.4mm 0}
+    .hd{display:flex;align-items:center;gap:1mm;padding:0 1.5mm;flex:none}
+    .hd .nm{padding:0;flex:1;min-width:0;max-height:2.3em;white-space:normal;line-height:1.1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+    .logo{height:${logoMm(s).toFixed(2)}mm;width:auto;max-width:45%;object-fit:contain;image-rendering:pixelated;flex:none}
     .bars{position:absolute;top:0;height:100%}
     .row{display:flex;justify-content:space-between;align-items:baseline;gap:1mm;padding:0 1.5mm;white-space:nowrap}
-    .code{font-size:${small ? 5 : 6}pt;font-family:Consolas,monospace;text-align:center;line-height:1.1;white-space:nowrap;overflow:hidden}
-    .pr{font-size:${small ? 8.5 : 11}pt;font-weight:800;line-height:1}
-    .ws{font-size:${small ? 7.5 : 9.5}pt;font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
+    .code{font-size:${fz(5, 6, 9)}pt;font-family:Consolas,monospace;text-align:center;line-height:1.1;white-space:nowrap;overflow:hidden}
+    .pr{font-size:${fz(8.5, 11, 18)}pt;font-weight:800;line-height:1}
+    .ws{font-size:${fz(7.5, 9.5, 15)}pt;font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
     .pr small,.ws small{font-size:.72em;font-weight:700}
   </style></head><body>${rows.map(r => `<div class="pg">${r.map((it, i) => labelCell(it, s, it && bcs[it.code], shift + i * (w + gap))).join('')}</div>`).join('')}</body></html>`;
 }
@@ -265,6 +272,7 @@ async function tsplLabels(entries, s) {
     'REFERENCE 0,0', 'OFFSET 0 mm', 'SET TEAR ON', `DENSITY ${Math.max(0, Math.min(15, parseInt(s.label_density, 10) || 10))}`, 'SPEED 3',
   ];
   const wD = D(w), hD = D(h), pad = D(1.5);
+  const logo = logoOn(s) ? tsplLogo(s, D(logoMm(s)), Math.round(wD * 0.45)) : null;
   for (let r = 0; r < list.length; r += across) {
     out.push('CLS');
     list.slice(r, r + across).forEach((it, i) => {
@@ -282,8 +290,13 @@ async function tsplLabels(entries, s) {
       const font = (left.length + right.length) * 12 <= avail ? { f: '2', cw: 12, ch: 20 } : { f: '1', cw: 8, ch: 12 };
       const topY = D(1), nameH = 20;
       const rateY = hD - D(0.8) - font.ch, codeY = rateY - 2 - 12;
-      const bcY = topY + nameH + D(0.6), bcH = Math.max(D(5), codeY - D(0.4) - bcY);
-      out.push(`TEXT ${x0 + pad},${topY},"2",0,1,1,"${name}"`);
+      const bcY = topY + (logo ? Math.max(nameH, logo.h) : nameH) + D(0.6), bcH = Math.max(D(5), codeY - D(0.4) - bcY);
+      let nameX = x0 + pad, headH = nameH;
+      if (logo) {
+        out.push(`BITMAP ${x0 + pad},${topY},${logo.wb},${logo.h},0,` + logo.data);
+        nameX += logo.w + D(1); headH = Math.max(nameH, logo.h);
+      }
+      out.push(`TEXT ${nameX},${topY + Math.max(0, Math.round((headH - nameH) / 2))},"2",0,1,1,"${name.slice(0, Math.max(3, Math.floor((x0 + wD - pad - nameX) / 12)))}"`);
       out.push(`BARCODE ${x0 + Math.max(0, Math.round((wD - bw) / 2))},${bcY},"${TYPE[kind]}",${bcH},0,0,${bc.dots},${bc.dots},"${tsplText(it.code)}"`);
       const codeTxt = tsplText(it.code).slice(0, Math.floor((wD - 2 * pad) / 8));
       out.push(`TEXT ${x0 + Math.round((wD - codeTxt.length * 8) / 2)},${codeY},"1",0,1,1,"${codeTxt}"`);
@@ -293,6 +306,27 @@ async function tsplLabels(entries, s) {
     out.push('PRINT 1,1');
   }
   return { data: out.join('\r\n') + '\r\n', count: list.length };
+}
+/* Logo for TSPL: scale the stored black-and-white picture to printer dots.
+   TSPL bitmaps print a dot where the bit is 0, so black pixels become 0 bits. */
+function tsplLogo(s, hDots, maxW) {
+  let b; try { b = JSON.parse(s.label_logo_bits || ''); } catch (e) { return null; }
+  if (!b || !b.w || !b.h || !b.data) return null;
+  const src = Buffer.from(b.data, 'base64'), srcWb = Math.ceil(b.w / 8);
+  let h = Math.max(8, hDots), w = Math.max(8, Math.round(b.w * h / b.h));
+  if (w > maxW) { w = maxW; h = Math.max(8, Math.round(b.h * w / b.w)); }
+  const wb = Math.ceil(w / 8), out = Buffer.alloc(wb * h, 0xff);
+  const invert = s.label_logo_invert === '1';
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(b.h - 1, Math.floor(y * b.h / h));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(b.w - 1, Math.floor(x * b.w / w));
+      let black = (src[sy * srcWb + (sx >> 3)] >> (7 - (sx & 7))) & 1;
+      if (invert) black ^= 1;
+      if (black) out[y * wb + (x >> 3)] &= ~(0x80 >> (x & 7));
+    }
+  }
+  return { w, h, wb, data: out.toString('latin1') };
 }
 /* Send bytes straight to a Windows printer queue (RAW), using the Windows print spooler. */
 function sendRaw(printerName, text) {
