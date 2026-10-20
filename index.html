@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>NRRL Counter</title>
-<meta name="theme-color" content="#4a2fbd">
+<meta name="theme-color" content="#ffffff">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="NRRL Counter">
@@ -14,6 +14,7 @@
 <link rel="preconnect" href="https://nbsrlpubmukksdpusxpx.supabase.co">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<script>try{var t=JSON.parse(localStorage.getItem('nrrlc.theme')||'"light"');document.documentElement.dataset.theme=t;}catch(e){}</script>
 <style>
 /* Layout: counter-first. Live camera strip on top, bill lines in the middle, sticky total + save bar at the bottom. */
 :root{
@@ -25,7 +26,11 @@
   --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
   color-scheme:light;
 }
-@media (prefers-color-scheme:dark){:root{
+:root[data-theme="dark"]{
+  --bg:#13111c; --surface:#1d1a2a; --sunk:#262236; --fg:#eceaf5; --muted:#a29eb8; --line:#332e47;
+  --accent:#9d8bff; --accent-fg:#160f3a; --marigold:#f4b53a; --marigold-ink:#2a1c00;
+  --good:#4cc07f; --warn:#f0a43a; --bad:#ff7b7b; color-scheme:dark}
+@media (prefers-color-scheme:dark){:root[data-theme="auto"]{
   --bg:#13111c; --surface:#1d1a2a; --sunk:#262236; --fg:#eceaf5; --muted:#a29eb8; --line:#332e47;
   --accent:#9d8bff; --accent-fg:#160f3a; --marigold:#f4b53a; --marigold-ink:#2a1c00;
   --good:#4cc07f; --warn:#f0a43a; --bad:#ff7b7b; color-scheme:dark}}
@@ -63,6 +68,9 @@ input[type=text],input[type=number],input[type=tel],input[type=search],input[typ
 .who b{color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .net{width:8px;height:8px;border-radius:50%;background:var(--good);flex:none}
 .net.off{background:var(--warn)}
+.themebtn{border:1px solid var(--line);background:var(--surface);border-radius:10px;width:38px;height:38px;flex:none;font-size:1.05rem;line-height:1;color:var(--fg)}
+.topbar h1{white-space:nowrap}
+.btn{white-space:nowrap}
 main{flex:1;min-height:0;overflow:auto}
 nav.tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;background:var(--surface);border-top:1px solid var(--line);padding:4px max(6px,env(safe-area-inset-right,0px)) calc(4px + env(safe-area-inset-bottom,0px)) max(6px,env(safe-area-inset-left,0px))}
 nav.tabs button{background:none;border:0;padding:7px 2px;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:1px;font-size:.74rem;font-weight:700;color:var(--muted)}

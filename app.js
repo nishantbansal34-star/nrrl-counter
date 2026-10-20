@@ -323,7 +323,7 @@ function showApp() {
   const tabs = [['bill', 'Bill'], ['bills', 'Sales'], ['items', 'Items']].concat(isOwner() ? [['staff', 'Staff']] : []);
   $('#app').innerHTML = `
     <header class="topbar"><h1>NRRL Counter</h1>
-      <div class="who"><button class="btn sm" id="installBtn" hidden>Install app</button><span class="net${netOk ? '' : ' off'}" id="net"></span><b id="whoName"></b><button class="btn sm" id="logoutBtn">Log out</button></div></header>
+      <div class="who"><button class="themebtn" id="themeBtn" type="button"></button><button class="btn sm" id="installBtn" hidden>Install app</button><span class="net${netOk ? '' : ' off'}" id="net"></span><b id="whoName"></b><button class="btn sm" id="logoutBtn">Log out</button></div></header>
     <div class="banner" id="pendBanner" hidden></div>
     <main id="main">
       <section id="v-bill"></section>
@@ -334,6 +334,15 @@ function showApp() {
     <nav class="tabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}">${svg(ICON[k === 'bills' ? 'bills' : k])}${l}</button>`).join('')}</nav>`;
   renderWho();
   $('#logoutBtn').addEventListener('click', () => { Scanner.stop(); logout(false); });
+  const THEMES = { light: 'Light', dark: 'Dark', auto: 'Auto' }, TICON = { light: '☀', dark: '☾', auto: '◐' };
+  const drawTheme = () => { const t = document.documentElement.dataset.theme || 'light'; $('#themeBtn').textContent = TICON[t] || '☀'; $('#themeBtn').setAttribute('aria-label', 'Theme: ' + THEMES[t]); };
+  drawTheme();
+  $('#themeBtn').addEventListener('click', () => {
+    const order = ['light', 'dark', 'auto'], cur = document.documentElement.dataset.theme || 'light';
+    const next = order[(order.indexOf(cur) + 1) % 3];
+    document.documentElement.dataset.theme = next; LS.set('theme', next); drawTheme();
+    toast(next === 'auto' ? 'Theme follows your phone' : (THEMES[next] + ' theme'));
+  });
   $('#installBtn').hidden = !installEvt;
   $('#installBtn').addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); installEvt = null; $('#installBtn').hidden = true; });
   $('nav.tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) show(b.dataset.tab); });

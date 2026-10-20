@@ -39,6 +39,16 @@ function toast(msg, opts = {}) {
   setTimeout(() => t.remove(), opts.ms || (opts.err ? 6000 : 2200));
 }
 
+/* ================= theme ================= */
+function applyTheme(t) {
+  t = ['light', 'dark', 'auto'].includes(t) ? t : 'light';
+  document.documentElement.dataset.theme = t;
+  LS.set('theme', t);
+  $$('#themeSeg [data-t]').forEach(b => b.setAttribute('aria-pressed', b.dataset.t === t));
+}
+applyTheme(LS.get('theme', 'light'));
+$('#themeSeg').addEventListener('click', e => { const b = e.target.closest('[data-t]'); if (b) { applyTheme(b.dataset.t); focusScan(); } });
+
 /* ================= state ================= */
 const S = {
   items: new Map(), settings: {}, view: 'bill',

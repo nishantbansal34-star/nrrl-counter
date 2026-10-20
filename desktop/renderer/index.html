@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self' about: data:; script-src 'self'">
@@ -17,6 +17,7 @@
       <button type="button" data-view="settings"><span>Settings</span><kbd>F11</kbd></button>
     </nav>
     <div class="rail-foot">
+      <div class="themeseg" id="themeSeg" role="group" aria-label="Theme"><button type="button" data-t="light">Light</button><button type="button" data-t="dark">Dark</button><button type="button" data-t="auto">Auto</button></div>
       <button type="button" id="lockBtn" class="lockbtn" hidden></button>
       <div id="backupState" class="muted small"></div>
     </div>
