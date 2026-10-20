@@ -83,6 +83,14 @@ const S = {
 };
 function freshCart(prev) { return { id: uid(), lines: [], mode: prev?.mode || 'retail', payment: 'cash', discount: 0, customer: '', phone: '' }; }
 const isOwner = () => S.me?.role === 'owner';
+/* What each person may do. The owner switches these on or off per person (Staff tab). */
+const PERMS = [
+  ['bill', 'Make bills'], ['rate', 'Change rates & give discount'], ['stock', 'See stock'], ['add', 'Add new items'],
+  ['edit', 'Edit items, prices & stock'], ['sales', 'See today’s sales'], ['reports', 'See older sales & totals'],
+  ['cancel', 'Cancel bills'], ['labels', 'Print labels (laptop)'], ['settings', 'Laptop settings'],
+];
+const PERM_DEF = { bill: true, rate: false, stock: true, add: true, edit: false, sales: true, reports: false, cancel: false, labels: true, settings: false };
+const can = k => isOwner() || !!((S.me?.perms && k in S.me.perms) ? S.me.perms[k] : PERM_DEF[k]);
 function saveCart() { LS.set('cart', S.cart); }
 (LS.get('items', []) || []).forEach(i => S.items.set(i.code, i));
 
@@ -240,6 +248,75 @@ const Scanner = (() => {
   return { start, stop, torch, torchAvailable, zoomRange, setZoom, getZoom, nextCamera, focusNow, backCameras, get active() { return !!stream; } };
 })();
 
+/* ---------------- fast scanner (Android app only) ----------------
+   Google ML Kit reads barcodes from the camera natively — much faster than reading video frames in
+   the page, and it handles small, tilted or slightly blurry labels. The camera picture sits behind
+   the page; the page is see-through only inside the scan window. Only barcodes inside that window count,
+   so other labels on the shelf around the item are ignored. */
+const Native = (() => {
+  const B = () => window.NrrlNative && window.NrrlNative.native && window.NrrlNative.BarcodeScanner;
+  let on = false, starting = null, listener = null, onCode = null, rectFn = null, zoomMax = 1, zoom = 1, torchOn = false;
+  const seen = new Map();
+  let ok;
+  async function available() {
+    if (ok !== undefined) return ok;
+    if (!B() || LS.get('scanEngine', 'fast') === 'basic') return (ok = false);
+    try { ok = !!(await B().isSupported()).supported; } catch (e) { ok = false; }
+    return ok;
+  }
+  function inside(bc) {
+    const r = rectFn && rectFn();
+    if (!r || !bc.cornerPoints || bc.cornerPoints.length < 4) return true;
+    const dpr = window.devicePixelRatio || 1;
+    const cx = bc.cornerPoints.reduce((a, p) => a + p[0], 0) / 4 / dpr, cy = bc.cornerPoints.reduce((a, p) => a + p[1], 0) / 4 / dpr;
+    const mx = r.width * 0.12, my = r.height * 0.2 + 30; // allow a little slack for the status bar
+    return cx >= r.left - mx && cx <= r.right + mx && cy >= r.top - my && cy <= r.bottom + my;
+  }
+  async function start(cb, rect) {
+    onCode = cb; rectFn = rect;
+    if (on) return true;
+    if (starting) return starting;
+    starting = (async () => {
+      const b = B();
+      let perm = await b.checkPermissions();
+      if (perm.camera !== 'granted') perm = await b.requestPermissions();
+      if (perm.camera !== 'granted') throw Object.assign(new Error('Camera permission is blocked'), { name: 'NotAllowedError' });
+      listener = await b.addListener('barcodeScanned', ev => {
+        const bc = ev && ev.barcode; if (!bc || !onCode) return;
+        const code = String(bc.rawValue || bc.displayValue || '').trim(); if (!code || !inside(bc)) return;
+        const now = performance.now(), prev = seen.get(code) || 0; seen.set(code, now);
+        if (now - prev > 750) onCode(code); // counts again only after leaving the window for a moment
+      });
+      document.documentElement.classList.add('native-scan');
+      await b.startScan({ formats: ['EAN_13', 'EAN_8', 'UPC_A', 'UPC_E', 'CODE_128', 'CODE_39', 'ITF', 'QR_CODE'] });
+      on = true; torchOn = false;
+      try { zoomMax = (await b.getMaxZoomRatio()).zoomRatio || 1; } catch (e) { zoomMax = 1; }
+      zoom = 1;
+      const want = Math.min(zoomMax, LS.get('nZoom', 1.5));
+      if (want > 1) await setZoom(want);
+      return true;
+    })();
+    try { return await starting; }
+    catch (e) { await stop(); throw e; }
+    finally { starting = null; }
+  }
+  async function stop() {
+    onCode = null;
+    if (starting) { try { await starting; } catch (e) {} }
+    document.documentElement.classList.remove('native-scan');
+    if (!on && !listener) return;
+    on = false;
+    try { await listener?.remove(); } catch (e) {}
+    listener = null;
+    try { await B()?.stopScan(); } catch (e) {}
+  }
+  async function setZoom(z) { z = Math.max(1, Math.min(zoomMax, z)); try { await B().setZoomRatio({ zoomRatio: z }); zoom = z; LS.set('nZoom', z); return z; } catch (e) { return false; } }
+  async function torchAvail() { try { return (await B().isTorchAvailable()).available; } catch (e) { return false; } }
+  async function torch() { try { await B().toggleTorch(); torchOn = !torchOn; return torchOn; } catch (e) { return null; } }
+  async function reset() { await stop(); ok = undefined; }
+  return { available, reset, start, stop, setZoom, torch, torchAvail, get active() { return on; }, get zoom() { return zoom; }, get zoomMax() { return zoomMax; } };
+})();
+
 /* ---------------- shell ---------------- */
 const ICON = {
   bill: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/>',
@@ -252,13 +329,24 @@ const svg = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 function boot() {
   if (!S.token || !S.me) return showLogin();
   showApp();
-  api('counter_me', { p_token: S.token }).then(me => { S.me = me; LS.set('me', me); renderWho(); }).catch(() => {});
+  refreshMe();
 }
+
+async function refreshMe() {
+  if (!S.token) return;
+  try {
+    const me = await api('counter_me', { p_token: S.token });
+    const changed = JSON.stringify([S.me?.role, S.me?.perms]) !== JSON.stringify([me.role, me.perms]);
+    S.me = me; LS.set('me', me); renderWho();
+    if (changed && !anySheetOpen() && !saving) { toast('Your access was updated by the owner'); showApp(S.view); }
+  } catch (e) {}
+}
+setInterval(() => { if (S.token && !document.hidden) refreshMe(); }, 30000);
 
 /* ---------------- login ---------------- */
 let loginStaff = null, pin = '';
 async function showLogin() {
-  Scanner.stop();
+  Scanner.stop(); Native.stop();
   $('#app').innerHTML = `<div class="login">
     <h1>NRRL Counter</h1><div class="sub">${esc(CFG.shop)}</div>
     <div id="lg"></div></div>`;
@@ -302,7 +390,7 @@ async function doLogin() {
   $('#perr').textContent = 'Checking…';
   try {
     const r = await api('counter_login', { p_staff: loginStaff.id, p_pin: pin });
-    S.token = r.token; S.me = { id: r.id, name: r.name, role: r.role };
+    S.token = r.token; S.me = { id: r.id, name: r.name, role: r.role, perms: r.perms };
     LS.set('token', S.token); LS.set('me', S.me); LS.set('lastStaff', r.id);
     pin = ''; showApp();
   } catch (e) { pin = ''; drawPin(); $('#perr').textContent = e.message; beep(false); }
@@ -319,8 +407,9 @@ async function logout(expired) {
 /* ---------------- main app ---------------- */
 let installEvt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; const b = $('#installBtn'); if (b) b.hidden = false; });
-function showApp() {
-  const tabs = [['bill', 'Bill'], ['bills', 'Sales'], ['items', 'Items']].concat(isOwner() ? [['staff', 'Staff']] : []);
+function showApp(view) {
+  Native.stop(); Scanner.stop();
+  const tabs = [['bill', 'Bill']].concat(can('sales') ? [['bills', 'Sales']] : [], [['items', 'Items']], isOwner() ? [['staff', 'Staff']] : []);
   $('#app').innerHTML = `
     <header class="topbar"><h1>NRRL Counter</h1>
       <div class="who"><button class="themebtn" id="themeBtn" type="button"></button><button class="btn sm" id="installBtn" hidden>Install app</button><span class="net${netOk ? '' : ' off'}" id="net"></span><b id="whoName"></b><button class="btn sm" id="logoutBtn">Log out</button></div></header>
@@ -333,7 +422,7 @@ function showApp() {
     </main>
     <nav class="tabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}">${svg(ICON[k === 'bills' ? 'bills' : k])}${l}</button>`).join('')}</nav>`;
   renderWho();
-  $('#logoutBtn').addEventListener('click', () => { Scanner.stop(); logout(false); });
+  $('#logoutBtn').addEventListener('click', () => { Scanner.stop(); Native.stop(); logout(false); });
   const THEMES = { light: 'Light', dark: 'Dark', auto: 'Auto' }, TICON = { light: '☀', dark: '☾', auto: '◐' };
   const drawTheme = () => { const t = document.documentElement.dataset.theme || 'light'; $('#themeBtn').textContent = TICON[t] || '☀'; $('#themeBtn').setAttribute('aria-label', 'Theme: ' + THEMES[t]); };
   drawTheme();
@@ -347,7 +436,7 @@ function showApp() {
   $('#installBtn').addEventListener('click', async () => { if (!installEvt) return; installEvt.prompt(); installEvt = null; $('#installBtn').hidden = true; });
   $('nav.tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) show(b.dataset.tab); });
   buildBill();
-  show('bill');
+  show(tabs.some(t => t[0] === view) ? view : 'bill');
   loadItems(true);
   syncPending();
 }
@@ -356,24 +445,25 @@ function show(v) {
   S.view = v;
   $$('nav.tabs [data-tab]').forEach(b => b.dataset.tab === v ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
   ['bill', 'bills', 'items', 'staff'].forEach(k => { const el = $('#v-' + k); if (el) el.hidden = k !== v; });
-  if (v === 'bill') startCam(); else Scanner.stop();
+  if (v === 'bill' && can('bill')) startCam(); else { Scanner.stop(); Native.stop(); }
   if (v === 'bills') renderBills(true);
   if (v === 'items') { renderItems(); loadItems(true); }
   if (v === 'staff') renderStaff();
 }
 document.addEventListener('visibilitychange', () => {
   if (!S.token) return;
-  if (document.hidden) Scanner.stop(); else if (S.view === 'bill' && !anySheetOpen()) startCam();
+  if (document.hidden) { Scanner.stop(); Native.stop(); } else if (S.view === 'bill' && can('bill') && !anySheetOpen()) startCam();
 });
 const anySheetOpen = () => !!$('.sheet');
 
 /* ---------------- bill screen ---------------- */
 function buildBill() {
+  if (!can('bill')) { $('#v-bill').innerHTML = `<div class="page"><div class="empty" style="padding:40px 16px"><b>Billing is switched off for you</b>Ask the owner to switch on “Make bills” for you in the Staff tab.</div></div>`; return; }
   $('#v-bill').innerHTML = `
     <div class="cam" id="cam">
       <video id="camVideo" playsinline muted></video>
       <div class="aim"></div>
-      <div class="camtools"><button type="button" id="zoomBtn" hidden>2×</button><button type="button" id="camBtn" hidden>Switch</button><button type="button" id="torchBtn" aria-pressed="false" hidden>Light</button></div>
+      <div class="camtools"><button type="button" id="zoomBtn" hidden>2×</button><button type="button" id="camBtn" hidden>Switch</button><button type="button" id="torchBtn" aria-pressed="false" hidden>Light</button><button type="button" id="engBtn" hidden></button></div>
       <div class="flash" id="flash">Point at a barcode or QR code</div>
       <div class="off" id="camOff" hidden><span id="camMsg">Camera is off</span><button type="button" class="btn" id="camOn">Start camera</button></div>
     </div>
@@ -381,11 +471,24 @@ function buildBill() {
       <input type="search" id="find" placeholder="Search item or type code" autocomplete="off" enterkeyhint="go">
       <div class="seg" role="group" aria-label="Price list"><button type="button" data-mode="retail">Retail</button><button type="button" data-mode="wholesale">Wholesale</button></div>
     </div>
+    <div class="quick" id="quick" hidden aria-label="Often sold"></div>
     <ul class="results" id="results"></ul>
     <ul class="lines" id="lines"></ul>
     <div class="paybar" id="paybar"></div>`;
   $('#camOn').addEventListener('click', startCam);
+  $('#engBtn').addEventListener('click', async () => {
+    const basic = LS.get('scanEngine', 'fast') === 'basic';
+    LS.set('scanEngine', basic ? 'fast' : 'basic');
+    await Native.reset(); Scanner.stop();
+    toast(basic ? 'Fast scanner on' : 'Normal camera on (slower). Tap again for the fast scanner.');
+    startCam();
+  });
   $('#zoomBtn').addEventListener('click', async () => {
+    if (Native.active) {
+      const steps = [1, 1.5, 2, 3, 4].filter(z => z <= Native.zoomMax), next = steps.find(z => z > Native.zoom + 0.05) || steps[0];
+      const z = await Native.setZoom(next); if (z) $('#zoomBtn').textContent = (Math.round(z * 10) / 10) + '×';
+      return;
+    }
     const r = Scanner.zoomRange(); if (!r) return;
     const steps = [1, 1.5, 2, 3, 4].filter(z => z <= r.max);
     const cur = Scanner.getZoom(), next = steps.find(z => z > cur + 0.05) || steps[0];
@@ -393,7 +496,7 @@ function buildBill() {
   });
   $('#camBtn').addEventListener('click', async () => { $('#camBtn').disabled = true; try { await Scanner.nextCamera(); camTools(); toast('Switched camera'); } catch (e) { toast('Could not switch camera', true); } $('#camBtn').disabled = false; });
   $('#camVideo').addEventListener('click', () => { Scanner.focusNow(); flash('hit', 'Focusing…'); });
-  $('#torchBtn').addEventListener('click', async e => { const on = e.currentTarget.getAttribute('aria-pressed') !== 'true'; if (await Scanner.torch(on)) e.currentTarget.setAttribute('aria-pressed', on); });
+  $('#torchBtn').addEventListener('click', async e => { if (Native.active) { const t = await Native.torch(); if (t != null) e.currentTarget.setAttribute('aria-pressed', t); return; } const on = e.currentTarget.getAttribute('aria-pressed') !== 'true'; if (await Scanner.torch(on)) e.currentTarget.setAttribute('aria-pressed', on); });
   const find = $('#find');
   find.addEventListener('input', () => renderResults(find.value.trim()));
   find.addEventListener('keydown', e => {
@@ -404,6 +507,8 @@ function buildBill() {
     else if (m.length === 1) { addItem(m[0]); find.value = ''; renderResults(''); }
     else if (!m.length) { find.value = ''; renderResults(''); unknownCode(v); }
   });
+  $('#quick').addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (b) addItem(S.items.get(b.dataset.code)); });
+  renderQuick();
   $('#results').addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (!b) return; addItem(S.items.get(b.dataset.code)); find.value = ''; renderResults(''); });
   $('.billtools .seg').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (!b) return; setMode(b.dataset.mode); });
   $('#lines').addEventListener('click', onLineClick);
@@ -412,6 +517,14 @@ function buildBill() {
 }
 async function camTools() {
   if (!$('#torchBtn')) return;
+  $('#engBtn').hidden = !(window.NrrlNative && window.NrrlNative.native);
+  $('#engBtn').textContent = Native.active ? 'Fast' : 'Normal';
+  if (Native.active) {
+    $('#torchBtn').hidden = !(await Native.torchAvail());
+    $('#zoomBtn').hidden = Native.zoomMax <= 1; $('#zoomBtn').textContent = (Math.round(Native.zoom * 10) / 10) + '×';
+    $('#camBtn').hidden = true;
+    return;
+  }
   $('#torchBtn').hidden = !Scanner.torchAvailable();
   const r = Scanner.zoomRange();
   $('#zoomBtn').hidden = !r; if (r) $('#zoomBtn').textContent = (Math.round(Scanner.getZoom() * 10) / 10) + '×';
@@ -419,6 +532,18 @@ async function camTools() {
 }
 async function startCam() {
   const off = $('#camOff'); if (!off) return;
+  if (await Native.available()) {
+    try {
+      await Native.start(onScan, () => { const a = $('#cam .aim') || $('#cam'); return a && a.getBoundingClientRect(); });
+      if (S.view !== 'bill' || document.hidden) { Native.stop(); return; }
+      off.hidden = true; $('#flash').textContent = 'Fast scanner on · hold the barcode in the box';
+      setTimeout(camTools, 300);
+      return;
+    } catch (e) {
+      if (e && e.name === 'NotAllowedError') { off.hidden = false; $('#camMsg').textContent = 'Camera permission is blocked. Allow camera for NRRL Counter in phone Settings → Apps, then tap Start camera.'; return; }
+      toast('Fast scanner could not start, using the normal camera', true);
+    }
+  }
   try {
     await Scanner.start($('#camVideo'), onScan);
     off.hidden = true;
@@ -444,6 +569,7 @@ function onScan(code) {
 }
 function unknownCode(code) {
   beep(false); flash('miss', 'Not in item list: ' + code);
+  if (!can('add')) { toast(`Code ${code} isn’t in the item list. Ask the owner to add it.`, true); return; }
   openItemSheet({ code }, { fromBill: true });
 }
 function priceFor(it) { return S.cart.mode === 'wholesale' && it.wholesale > 0 ? it.wholesale : it.retail; }
@@ -455,7 +581,7 @@ function addItem(it, qty = 1) {
   let l;
   if (i >= 0) { l = c.lines[i]; l.qty = r2(l.qty + qty); c.lines.splice(i, 1); c.lines.unshift(l); }
   else { l = { code: it.code, name: it.name, unit: unitFor(it), gst: it.gst, price: priceFor(it), qty }; c.lines.unshift(l); }
-  saveCart(); renderCart(true);
+  saveCart(); renderCart(true); bumpFreq(it.code);
   beep(true); flash('hit', `✓ ${it.name} · ${l.qty} ${l.unit}`);
   if (it.stock != null && it.stock - l.qty < 0) toast(`${it.name}: stock shows ${it.stock} left`, true);
 }
@@ -475,7 +601,9 @@ function totals() {
   return { sub, disc, total, gst, qty };
 }
 function renderCart(fresh) {
-  const c = S.cart, own = isOwner();
+  const c = S.cart, own = can('rate');
+  if (!$('#lines')) return;
+  if (!own && c.discount) c.discount = 0;
   $$('.billtools [data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === c.mode));
   const ul = $('#lines');
   ul.innerHTML = c.lines.length ? c.lines.map((l, i) => `<li class="line${fresh && i === 0 ? ' new' : ''}">
@@ -495,7 +623,7 @@ function renderCart(fresh) {
     <button class="btn primary save" type="button" id="saveBtn" ${c.lines.length ? '' : 'disabled'}>Save bill</button>
     <div class="opts">
       <div class="seg" role="group" aria-label="Payment">${['cash', 'upi', 'udhaar'].map(p => `<button type="button" data-pay="${p}" aria-pressed="${c.payment === p}">${p === 'upi' ? 'UPI' : p === 'cash' ? 'Cash' : 'Udhaar'}</button>`).join('')}</div>
-      <label class="sub" for="disc" style="margin-left:auto">Disc ₹</label><input type="number" inputmode="decimal" id="disc" value="${c.discount || ''}" placeholder="0">
+      ${own ? `<label class="sub" for="disc" style="margin-left:auto">Disc ₹</label><input type="number" inputmode="decimal" id="disc" value="${c.discount || ''}" placeholder="0">` : '<span style="margin-left:auto"></span>'}
       <button class="btn sm" type="button" id="custBtn" aria-expanded="${!!(c.customer || c.phone || c.payment === 'udhaar')}">${c.customer ? esc(c.customer) : 'Customer'}</button>
     </div>
     <div class="more" id="custFields" ${c.customer || c.phone || c.payment === 'udhaar' ? '' : 'hidden'}>
@@ -504,7 +632,7 @@ function renderCart(fresh) {
     </div>`;
   $('#saveBtn').addEventListener('click', saveBill);
   $('#paybar .seg').addEventListener('click', e => { const b = e.target.closest('[data-pay]'); if (!b) return; c.payment = b.dataset.pay; saveCart(); renderCart(); });
-  $('#disc').addEventListener('change', e => { c.discount = Math.max(0, r2(e.target.value)); saveCart(); renderCart(); });
+  $('#disc')?.addEventListener('change', e => { c.discount = Math.max(0, r2(e.target.value)); saveCart(); renderCart(); });
   $('#custBtn').addEventListener('click', () => { const f = $('#custFields'); f.hidden = !f.hidden; if (!f.hidden) $('#cName').focus(); });
   $('#cName').addEventListener('input', e => { c.customer = e.target.value; saveCart(); });
   $('#cPhone').addEventListener('input', e => { c.phone = e.target.value; saveCart(); });
@@ -524,14 +652,59 @@ function onLineChange(e) {
   if (p != null) L[p].price = Math.max(0, r2(e.target.value));
   saveCart(); renderCart();
 }
-function search(q) {
-  q = q.toLowerCase(); const out = [];
-  if (q.length < 2) return out;
-  for (const it of S.items.values()) { if (it.name.toLowerCase().includes(q) || it.code.toLowerCase().includes(q)) { out.push(it); if (out.length >= 8) break; } }
-  return out;
+/* Search: every word must match the start of a word in the name, anywhere in the name or code,
+   or be one letter off (typo). Best matches and often-sold items come first. */
+const normQ = t => String(t || '').toLowerCase().replace(/[^a-z0-9\u0900-\u097f]+/g, ' ').trim();
+function near(a, b) { // true if a and b differ by at most one letter
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, d = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++d > 1) return false;
+    if (a[i] === b[j + 1] && a[i + 1] === b[j]) { i += 2; j += 2; continue; } // swapped letters
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+  }
+  return d + (a.length - i) + (b.length - j) <= 1;
+}
+function rankItems(list, q, limit = 8) {
+  const nq = normQ(q); if (!nq) return [];
+  const words = nq.split(' '), lq = String(q).trim().toLowerCase(), freq = LS.get('freq', {}), out = [];
+  for (const it of list) {
+    const code = it.code.toLowerCase(), name = normQ(it.name), nw = name.split(' ');
+    let sc;
+    if (code === lq) sc = 1000; else if (lq.length >= 2 && code.startsWith(lq)) sc = 500;
+    else {
+      sc = 0;
+      for (const w of words) {
+        if (nw.some(x => x.startsWith(w))) sc += 30;
+        else if (name.includes(w)) sc += 15;
+        else if (code.includes(w)) sc += 12;
+        else if (w.length >= 4 && nw.some(x => near(x.slice(0, w.length), w) || near(x.slice(0, w.length + 1), w) || near(x, w))) sc += 6;
+        else { sc = -1; break; }
+      }
+      if (sc < 0 || (nq.length < 2 && !nw.some(x => x.startsWith(nq)))) continue;
+      if (name.startsWith(nq)) sc += 40;
+    }
+    out.push([sc + Math.min(25, freq[it.code] || 0), it]);
+  }
+  return out.sort((a, b) => b[0] - a[0] || a[1].name.localeCompare(b[1].name)).slice(0, limit).map(x => x[1]);
+}
+const search = q => rankItems(S.items.values(), q, 8);
+function bumpFreq(code) { const f = LS.get('freq', {}); f[code] = (f[code] || 0) + 1; LS.set('freq', f); }
+function topItems(n) { const f = LS.get('freq', {}); return Object.keys(f).filter(c => S.items.has(c)).sort((a, b) => f[b] - f[a]).slice(0, n).map(c => S.items.get(c)); }
+function hl(text, q) { // highlight the typed words
+  const ws = normQ(q).split(' ').filter(w => w.length > 1); let h = esc(text);
+  for (const w of ws) h = h.replace(new RegExp('(^|[^a-z0-9])(' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i'), '$1<mark>$2</mark>');
+  return h;
 }
 function renderResults(q) {
-  $('#results').innerHTML = search(q).map(it => `<li><button type="button" data-code="${esc(it.code)}"><span class="nm">${esc(it.name)}</span><span class="num">${money(priceFor(it))}</span></button></li>`).join('');
+  $('#results').innerHTML = search(q).map(it => `<li><button type="button" data-code="${esc(it.code)}"><span class="nm">${hl(it.name, q)} <span class="code">${esc(it.code)}</span></span><span class="num">${money(priceFor(it))}</span></button></li>`).join('');
+}
+function renderQuick() {
+  const el = $('#quick'); if (!el) return;
+  const top = topItems(10);
+  el.hidden = !top.length;
+  el.innerHTML = top.map(it => `<button type="button" data-code="${esc(it.code)}">${esc(it.name)}</button>`).join('');
 }
 
 /* USB / Bluetooth scanner typing anywhere outside a text box */
@@ -556,7 +729,7 @@ async function saveBill() {
   const t = totals();
   const payload = {
     client_id: c.id, mode: c.mode, payment: c.payment, customer: c.customer.trim(), phone: c.phone.trim(), discount: t.disc,
-    lines: c.lines.map(l => isOwner() ? { code: l.code, qty: l.qty, price: l.price } : { code: l.code, qty: l.qty }),
+    lines: c.lines.map(l => can('rate') ? { code: l.code, qty: l.qty, price: l.price } : { code: l.code, qty: l.qty }),
   };
   const local = { id: null, created_at: new Date().toISOString(), staff_name: S.me.name, mode: c.mode, payment: c.payment, customer: payload.customer, phone: payload.phone,
     lines: c.lines.map(l => ({ code: l.code, name: l.name, unit: l.unit, qty: l.qty, price: l.price, amount: r2(l.price * l.qty) })), subtotal: t.sub, discount: t.disc, total: t.total, gst: t.gst };
@@ -639,17 +812,19 @@ function showDone(b, offline) {
 
 function openItemSheet(it, opts = {}) {
   const editing = !!(it && it.name != null);
-  const canEdit = isOwner() || !editing;
+  const canEdit = editing ? can('edit') : can('add');
+  if (!editing && !canEdit) { toast('Adding items is switched off for you.', true); return; }
+  const seeStock = can('stock');
   const d = openSheet('itemSheet', `
     <form id="itemForm" novalidate>
       <h3>${editing ? (canEdit ? 'Edit item' : esc(it.name)) : opts.fromBill ? 'New barcode' : 'Add item'}</h3>
-      <p class="s">${opts.fromBill ? `Code <b class="num">${esc(it.code)}</b> isn’t in the item list. Add it once; after that it scans straight into bills.` : editing && !canEdit ? 'Only the owner can change prices.' : 'Prices include GST.'}</p>
+      <p class="s">${opts.fromBill ? `Code <b class="num">${esc(it.code)}</b> isn’t in the item list. Add it once; after that it scans straight into bills.` : editing && !canEdit ? 'Changing items is switched off for you.' : 'Prices include GST.'}</p>
       <div class="grid2">
         <div class="field w"><label class="lbl" for="fCode">Barcode / code</label><div style="display:flex;gap:8px"><input type="text" id="fCode" value="${esc(it?.code ?? '')}" autocomplete="off" ${canEdit ? '' : 'disabled'}>${canEdit ? '<button type="button" class="btn sm" id="fScan">Scan</button>' : ''}</div></div>
         <div class="field w"><label class="lbl" for="fName">Item name</label><input type="text" id="fName" value="${esc(it?.name ?? '')}" placeholder="e.g. Metallic balloons, pack of 50" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fRetail">Retail ₹</label><input type="number" inputmode="decimal" id="fRetail" value="${it?.retail ?? ''}" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fWhole">Wholesale ₹</label><input type="number" inputmode="decimal" id="fWhole" value="${it?.wholesale || ''}" ${canEdit ? '' : 'disabled'}></div>
-        <div class="field"><label class="lbl" for="fStock">Stock</label><input type="number" inputmode="decimal" id="fStock" value="${it?.stock ?? ''}" placeholder="Leave blank to not track" ${canEdit ? '' : 'disabled'}></div>
+        <div class="field"${seeStock ? '' : ' hidden'}><label class="lbl" for="fStock">Stock</label><input type="number" inputmode="decimal" id="fStock" value="${it?.stock ?? ''}" placeholder="Leave blank to not track" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fUnit">Unit</label><select id="fUnit" ${canEdit ? '' : 'disabled'}>${['pcs', 'pkt', 'box', 'dozen', 'set', 'roll', 'kg', 'mtr'].map(u => `<option${(it?.unit || 'pcs') === u ? ' selected' : ''}>${u}</option>`).join('')}</select></div>
         <div class="field"><label class="lbl" for="fGst">GST %</label><select id="fGst" ${canEdit ? '' : 'disabled'}>${[0, 5, 12, 18, 28].map(g => `<option value="${g}"${(it?.gst ?? 18) == g ? ' selected' : ''}>${g}%</option>`).join('')}</select></div>
         <div class="field"><label class="lbl" for="fHsn">HSN</label><input type="text" inputmode="numeric" id="fHsn" value="${esc(it?.hsn ?? '')}" ${canEdit ? '' : 'disabled'}></div>
@@ -658,7 +833,7 @@ function openItemSheet(it, opts = {}) {
       <div class="acts2">
         <button class="btn" type="button" id="fCancel">${canEdit ? 'Cancel' : 'Close'}</button>
         ${canEdit ? `<button class="btn primary" type="submit" id="fSave">${opts.fromBill ? 'Save & add to bill' : 'Save item'}</button>` : ''}
-        ${editing && isOwner() ? '<button class="btn danger w" type="button" id="fDel">Remove item</button>' : ''}
+        ${editing && can('edit') ? '<button class="btn danger w" type="button" id="fDel">Remove item</button>' : ''}
       </div>
       <div class="confirm" id="fConfirm" hidden><span>Remove this item from the list? Old bills keep their copy.</span><button class="btn sm" type="button" id="fNo">Keep</button><button class="btn sm danger" type="button" id="fYes">Remove</button></div>
     </form>`, () => { if (S.view === 'bill') startCam(); });
@@ -698,6 +873,22 @@ function openItemSheet(it, opts = {}) {
 /* full-screen scan used to fill a code field */
 async function scanInto(input) {
   const wasBill = S.view === 'bill';
+  if (await Native.available()) {
+    await Native.stop();
+    const sh = $('.sheet'); if (sh) sh.style.visibility = 'hidden';
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;justify-content:space-between;background:transparent';
+    ov.innerHTML = `<div class="flash" style="margin:calc(16px + env(safe-area-inset-top,0px)) 16px 0;background:rgba(0,0,0,.65);color:#fff;border-radius:10px;padding:8px 12px;font-weight:600">Scan the item’s barcode</div>
+      <div style="align-self:center;width:72vw;height:28vh;border:2px solid rgba(255,255,255,.9);border-radius:14px;box-shadow:0 0 0 999px rgba(0,0,0,.3)"></div>
+      <div style="padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px))"><button class="btn" type="button" style="width:100%">Cancel</button></div>`;
+    document.body.appendChild(ov);
+    const hideMain = $('#app'); hideMain.style.visibility = 'hidden';
+    const done = async () => { await Native.stop(); ov.remove(); hideMain.style.visibility = ''; if (sh) sh.style.visibility = ''; if (wasBill && !anySheetOpen()) startCam(); };
+    ov.querySelector('button').addEventListener('click', done);
+    try { await Native.start(code => { input.value = code; beep(true); done(); }, null); }
+    catch (e) { toast('Camera could not start.', true); done(); }
+    return;
+  }
   Scanner.stop();
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;inset:0;z-index:70;background:#000;display:flex;flex-direction:column';
@@ -723,7 +914,8 @@ function rangeDates(r) {
 }
 async function renderBills(reload) {
   const el = $('#v-bills');
-  const own = isOwner();
+  const own = can('reports');
+  if (!can('sales')) { el.innerHTML = '<div class="page"><div class="empty"><b>Sales are switched off for you</b></div></div>'; return; }
   if (reload) {
     el.innerHTML = `<div class="page"><p class="hint">Loading sales…</p></div>`;
     try { const [f, t] = rangeDates(own ? billRange : 'today'); bills = await api('counter_bills', { p_token: S.token, p_from: f.toISOString(), p_to: t ? t.toISOString() : null }); }
@@ -743,7 +935,7 @@ async function renderBills(reload) {
       <div class="stat"><div class="lbl">UPI</div><div class="v">${money(pay.upi || 0)}</div></div>
       <div class="stat"><div class="lbl">Udhaar</div><div class="v">${money(pay.udhaar || 0)}</div></div>
     </div>
-    ${own && Object.keys(staff).length > 1 ? `<p class="hint" style="margin:-4px 0 12px">By person: ${Object.entries(staff).map(([n, v]) => `${esc(n)} ${money(v)}`).join(' · ')}</p>` : ''}
+    ${isOwner() && Object.keys(staff).length > 1 ? `<p class="hint" style="margin:-4px 0 12px">By person: ${Object.entries(staff).map(([n, v]) => `${esc(n)} ${money(v)}`).join(' · ')}</p>` : ''}
     ${S.pending.length ? `<p class="hint" style="margin-bottom:10px">${S.pending.length} bill(s) on this phone are waiting to upload and aren’t counted yet.</p>` : ''}
     <ul class="list" id="billList">${bills.length ? bills.map(b => billRow(b)).join('') : '<li class="empty"><b>No bills yet</b>Saved bills show up here.</li>'}</ul>
   </div>`;
@@ -762,7 +954,7 @@ function billRow(b) {
   </button>${open ? `<div class="detail"><table>${b.lines.map(l => `<tr><td>${esc(l.name)}<div class="hint">${l.qty} ${esc(l.unit || '')} × ${money(l.price)}</div></td><td>${money(l.amount)}</td></tr>`).join('')}
     ${+b.discount ? `<tr><td>Discount</td><td>−${money(b.discount)}</td></tr>` : ''}<tr><td><b>Total</b> <span class="hint">incl. GST ${money(b.gst)}</span></td><td><b>${money(b.total)}</b></td></tr></table>
     <div class="acts">${b.voided ? '' : `<a class="btn sm primary" href="${esc(waLink(b))}" target="_blank" rel="noopener">WhatsApp</a>`}
-    ${isOwner() && !b.voided ? `<button class="btn sm danger" type="button" data-void="${b.id}">Cancel bill</button>` : ''}</div>
+    ${can('cancel') && !b.voided ? `<button class="btn sm danger" type="button" data-void="${b.id}">Cancel bill</button>` : ''}</div>
     <div class="confirm" data-vc="${b.id}" hidden><span>Cancel bill #${b.id}? Items go back into stock.</span><button class="btn sm" type="button" data-keep>Keep</button><button class="btn sm danger" type="button" data-voidyes="${b.id}">Cancel bill</button></div>
   </div>` : ''}</li>`;
 }
@@ -782,15 +974,15 @@ let itemFilter = 'all';
 function renderItems() {
   const el = $('#v-items'); if (!el) return;
   const prevQ = $('#itemQ')?.value || '';
-  const own = isOwner();
+  const own = can('edit');
   el.innerHTML = `<div class="page">
     <div class="ph"><h2>Items</h2><div style="display:flex;gap:8px;flex-wrap:wrap">
       ${own ? '<button class="btn sm" id="impBtn">Import CSV</button><button class="btn sm" id="expBtn">Download CSV</button>' : ''}
-      <button class="btn sm accent" id="addBtn">+ Add item</button></div></div>
+      ${can('add') || can('edit') ? '<button class="btn sm accent" id="addBtn">+ Add item</button>' : ''}</div></div>
     <div class="bar"><input type="search" id="itemQ" placeholder="Search name or code" value="${esc(prevQ)}">
-      <div class="seg" id="itemSeg"><button type="button" data-f="all" aria-pressed="${itemFilter === 'all'}">All</button><button type="button" data-f="low" aria-pressed="${itemFilter === 'low'}">Low stock</button></div></div>
+      <div class="seg" id="itemSeg"${can('stock') ? '' : ' hidden'}><button type="button" data-f="all" aria-pressed="${itemFilter === 'all'}">All</button><button type="button" data-f="low" aria-pressed="${itemFilter === 'low'}">Low stock</button></div></div>
     <ul class="list" id="itemList"></ul><p class="hint" id="itemCount" style="margin-top:8px"></p></div>`;
-  $('#addBtn').addEventListener('click', () => openItemSheet(null));
+  $('#addBtn')?.addEventListener('click', () => openItemSheet(null));
   $('#impBtn')?.addEventListener('click', openImport);
   $('#expBtn')?.addEventListener('click', exportItems);
   $('#itemQ').addEventListener('input', drawItemList);
@@ -805,11 +997,10 @@ function stockChip(it) {
   return `<span class="chip">${it.stock} ${esc(it.unit)}</span>`;
 }
 function drawItemList() {
-  const q = ($('#itemQ')?.value || '').trim().toLowerCase();
+  const q = ($('#itemQ')?.value || '').trim();
   let list = [...S.items.values()];
-  if (q) list = list.filter(i => i.name.toLowerCase().includes(q) || i.code.toLowerCase().includes(q));
   if (itemFilter === 'low') list = list.filter(i => i.stock != null && i.stock <= 5);
-  list.sort((a, b) => a.name.localeCompare(b.name));
+  if (q) list = rankItems(list, q, 300); else list.sort((a, b) => a.name.localeCompare(b.name));
   $('#itemList').innerHTML = !S.items.size ? '<li class="empty"><b>No items yet</b>Add items here, import a CSV, or just scan an unknown barcode on the Bill screen.</li>'
     : !list.length ? '<li class="empty">Nothing matches.</li>'
     : list.slice(0, 300).map(it => `<li><button class="row" type="button" data-code="${esc(it.code)}">
@@ -869,9 +1060,9 @@ async function renderStaff() {
   try { list = await api('counter_staff_all', { p_token: S.token }); }
   catch (e) { el.innerHTML = `<div class="page"><p class="err">${esc(e.message)}</p></div>`; return; }
   el.innerHTML = `<div class="page"><div class="ph"><h2>Staff</h2><button class="btn sm accent" id="addStaff">+ Add person</button></div>
-    <p class="hint" style="margin:-4px 0 12px">Staff can make bills, see today’s sales and add new items. They can’t change prices, cancel bills or see older sales.</p>
-    <ul class="list">${list.map(s => `<li><button class="row" type="button" data-sid="${s.id}"><span class="nm">${esc(s.name)}</span>
-      <span class="rt">${s.active ? '' : '<span class="chip out">Blocked</span>'}</span><span class="meta"><span class="chip${s.role === 'owner' ? ' acc' : ''}">${s.role === 'owner' ? 'Owner' : 'Staff'}</span></span></button></li>`).join('')}</ul></div>`;
+    <p class="hint" style="margin:-4px 0 12px">Tap a person to choose what they can do on the phone and the laptop, or to block them. Changes reach their phone within 30 seconds.</p>
+    <ul class="list">${list.map(s => { const p = s.perms || PERM_DEF, on = PERMS.filter(([k]) => p[k]).length; return `<li><button class="row" type="button" data-sid="${s.id}"><span class="nm">${esc(s.name)}</span>
+      <span class="rt">${s.active ? '' : '<span class="chip out">Blocked</span>'}</span><span class="meta"><span class="chip${s.role === 'owner' ? ' acc' : ''}">${s.role === 'owner' ? 'Owner · full access' : `Staff · ${on} of ${PERMS.length} allowed`}</span>${s.role !== 'owner' && s.active ? `<span>${PERMS.filter(([k]) => !p[k]).map(([, l]) => l).slice(0, 2).map(esc).join(', ')}${PERMS.filter(([k]) => !p[k]).length > 2 ? '…' : ''} off</span>` : ''}</span></button></li>`; }).join('')}</ul></div>`;
   $('#addStaff').addEventListener('click', () => staffSheet(null));
   $$('[data-sid]', el).forEach(b => b.addEventListener('click', () => staffSheet(list.find(s => s.id === b.dataset.sid))));
 }
@@ -883,18 +1074,25 @@ function staffSheet(s) {
       <div class="field w"><label class="lbl" for="sName">Name</label><input type="text" id="sName" value="${esc(s?.name || '')}" placeholder="e.g. Ramesh"></div>
       <div class="field"><label class="lbl" for="sPin">${s ? 'New PIN' : 'PIN'}</label><input type="tel" inputmode="numeric" id="sPin" maxlength="8" placeholder="4–8 digits" autocomplete="off"></div>
       <div class="field"><label class="lbl" for="sRole">Access</label><select id="sRole" ${self ? 'disabled' : ''}><option value="staff"${s?.role !== 'owner' ? ' selected' : ''}>Staff</option><option value="owner"${s?.role === 'owner' ? ' selected' : ''}>Owner (full access)</option></select></div>
-      ${s && !self ? `<label class="w" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="sActive" ${s.active ? 'checked' : ''}> Allowed to log in</label>` : ''}
+      ${s && !self ? `<label class="w perm-row perm-main"><span><b>Allowed to log in</b><small>Switch off to block this person on every phone and laptop at once</small></span><input type="checkbox" class="sw" id="sActive" ${s.active ? 'checked' : ''}></label>` : ''}
+    </div>
+    <div id="permBox" class="perms"${s?.role === 'owner' ? ' hidden' : ''}>
+      <div class="lbl" style="margin:12px 0 4px">What they can do</div>
+      ${PERMS.map(([k, l]) => `<label class="perm-row"><span>${esc(l)}</span><input type="checkbox" class="sw" data-perm="${k}" ${((s?.perms && k in s.perms) ? s.perms[k] : PERM_DEF[k]) ? 'checked' : ''}></label>`).join('')}
     </div>
     <p class="err" id="sErr" style="text-align:left"></p>
     <div class="acts2"><button class="btn" type="button" id="sCancel">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`);
   $('#sCancel', d).addEventListener('click', closeSheet);
+  $('#sRole', d)?.addEventListener('change', e => { $('#permBox', d).hidden = e.target.value === 'owner'; });
   $('#sf', d).addEventListener('submit', async e => {
     e.preventDefault();
     const name = $('#sName', d).value.trim(), pinV = $('#sPin', d).value.trim();
     if (!name) return $('#sErr', d).textContent = 'Add a name.';
     if ((!s || pinV) && !/^\d{4,8}$/.test(pinV)) return $('#sErr', d).textContent = 'PIN must be 4 to 8 digits.';
     try {
-      await api('counter_staff_save', { p_token: S.token, p_id: s?.id || null, p_name: name, p_pin: pinV || null, p_role: self ? 'owner' : $('#sRole', d).value, p_active: s && !self ? $('#sActive', d).checked : true });
+      const r = await api('counter_staff_save', { p_token: S.token, p_id: s?.id || null, p_name: name, p_pin: pinV || null, p_role: self ? 'owner' : $('#sRole', d).value, p_active: s && !self ? $('#sActive', d).checked : true });
+      const perms = {}; $$('[data-perm]', d).forEach(x => { perms[x.dataset.perm] = x.checked; });
+      if (!self) await api('counter_staff_perms', { p_token: S.token, p_id: r.id || s.id, p_perms: perms });
       closeSheet(); toast('Saved ' + name);
       LS.set('staff', await api('counter_staff_list').catch(() => LS.get('staff', [])));
       if (self && pinV) { toast('PIN changed. Log in with the new PIN.'); logout(true); return; }

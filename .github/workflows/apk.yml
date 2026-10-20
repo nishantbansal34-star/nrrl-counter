@@ -36,12 +36,26 @@ jobs:
         working-directory: shell
         run: |
           npm init -y >/dev/null
-          npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0
+          npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0 @capacitor-mlkit/barcode-scanning@6.2.0 esbuild@0.24.0
+          # fast native barcode scanner (Google ML Kit) for the page
+          cp ../native/entry.js native-entry.js
+          npx esbuild native-entry.js --bundle --format=iife --minify --outfile=www/native.js
+          sed -i 's#<script src="app.js" defer></script>#<script src="native.js"></script>\n<script src="app.js" defer></script>#' www/index.html
+          grep -n "native.js" www/index.html
           npx cap init "NRRL Counter" in.nrrl.counter --web-dir www
           npx cap add android
           # camera permission for live barcode scanning
           sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />#' android/app/src/main/AndroidManifest.xml
-          grep -n "permission" android/app/src/main/AndroidManifest.xml
+          sed -i 's#<uses-permission android:name="android.permission.CAMERA" />#<uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.FLASHLIGHT" />#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#</application>#    <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui" />\n    </application>#' android/app/src/main/AndroidManifest.xml
+          # the ML Kit plugin needs data binding
+          python3 - <<'PY'
+          p = 'android/app/build.gradle'
+          s = open(p).read()
+          s = s.replace('android {', 'android {\n    buildFeatures {\n        dataBinding true\n    }', 1)
+          open(p, 'w').write(s)
+          PY
+          grep -n "permission\|meta-data\|application" android/app/src/main/AndroidManifest.xml
 
       - name: App icon
         working-directory: shell
