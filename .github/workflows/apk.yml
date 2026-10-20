@@ -50,6 +50,11 @@ jobs:
           cp -r ../android-icons/mipmap-* $R/
           sed -i 's#<color name="ic_launcher_background">.*</color>#<color name="ic_launcher_background">\#4a2fbd</color>#' $R/values/ic_launcher_background.xml || true
 
+      - name: Use the same signing key every time (so updates install over the old app)
+        run: |
+          mkdir -p ~/.android
+          cp android-signing/nrrl.keystore ~/.android/debug.keystore
+
       - name: Build APK
         working-directory: shell
         run: |
@@ -60,6 +65,8 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace > ../gradle.log 2>&1 || report ../gradle.log "gradle failed"
           cp app/build/outputs/apk/debug/app-debug.apk ../../nrrl-counter.apk
+          # show which key signed it
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/apksigner verify --print-certs ../../nrrl-counter.apk | grep -i "SHA-256" | head -1 || true
 
       - uses: actions/upload-artifact@v4
         with:
