@@ -51,9 +51,20 @@ jobs:
           sed -i 's#<color name="ic_launcher_background">.*</color>#<color name="ic_launcher_background">\#4a2fbd</color>#' $R/values/ic_launcher_background.xml || true
 
       - name: Use the same signing key every time (so updates install over the old app)
+        working-directory: shell
         run: |
-          mkdir -p ~/.android
-          cp android-signing/nrrl.keystore ~/.android/debug.keystore
+          KS="$GITHUB_WORKSPACE/android-signing/nrrl.keystore"
+          python3 - "$KS" <<'PY'
+          import sys, re
+          ks = sys.argv[1]
+          p = 'android/app/build.gradle'
+          s = open(p).read()
+          cfg = ('    signingConfigs {\n        nrrl {\n            storeFile file("%s")\n            storePassword "android"\n'
+                 '            keyAlias "androiddebugkey"\n            keyPassword "android"\n        }\n    }\n' % ks)
+          s = s.replace('    buildTypes {', cfg + '    buildTypes {\n        debug {\n            signingConfig signingConfigs.nrrl\n        }', 1)
+          open(p, 'w').write(s)
+          PY
+          grep -n "signingConfig" android/app/build.gradle
 
       - name: Build APK
         working-directory: shell
