@@ -968,7 +968,7 @@ async function renderLinkCard() {
   const el = $('#linkBody'); if (!el) return;
   let st; try { st = await rpc('link.status'); } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
   if (st.linked) {
-    el.innerHTML = `<p>Linked. This laptop and the phone app share one item list, stock and sales. Changes on either side show on the other within about 15 seconds.</p>
+    el.innerHTML = `<p>Linked as <b>${esc(st.code || 'laptop')}</b>${st.prefix ? ` · this laptop's bills are numbered <b>${esc(st.prefix)}1, ${esc(st.prefix)}2…</b>` : ''}. This laptop, other linked laptops and the phone app share one item list, stock and sales. Changes on either side show on the other within about 15 seconds.</p>
       <p class="${st.lastError ? 'err' : 'muted'}">${st.lastError ? esc(st.lastError) + (st.pending ? ` · ${st.pending} changes waiting, will retry` : '') : (st.lastOk ? 'Last synced ' + esc(new Date(st.lastOk).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', second: '2-digit' })) : 'Linked') + (st.pending ? ` · ${st.pending} changes waiting` : ' · up to date')}</p>
       <div class="toolbar"><button type="button" class="btn accent" id="lkNow">Sync now</button><button type="button" class="btn danger" id="lkOff">Unlink</button></div>
       <div class="confirmbar" id="lkConfirm" hidden><span>Unlink this laptop from the phone app? Both keep their own data, but stop updating each other.</span><button type="button" class="btn" id="lkNo">Keep linked</button><button type="button" class="btn danger" id="lkYes">Unlink</button></div>`;
@@ -1004,15 +1004,18 @@ async function renderSheetCard() {
   if (st.url) {
     el.innerHTML = `<p>Connected. Every bill appears in your sheet within about 15 seconds, and the item list with stock updates every minute. Open the sheet in the Google Sheets app on your phone to watch it.</p>
       <p class="${st.lastError ? 'err' : 'muted'}">${st.lastError ? 'Last try failed: ' + esc(st.lastError) + (st.pending ? ` · ${st.pending} waiting, will retry` : '') : (st.lastOk ? 'Last sent ' + esc(new Date(st.lastOk).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })) : 'Connected') + (st.pending ? ` · ${st.pending} waiting to send` : ' · all sent')}</p>
-      <div class="toolbar"><button type="button" class="btn accent" id="shNow">Send now</button><button type="button" class="btn danger" id="shOff">Disconnect</button></div>
+      <div class="toolbar"><button type="button" class="btn accent" id="shNow">Send now</button><button type="button" class="btn" id="shKey">Copy key for another laptop</button><button type="button" class="btn danger" id="shOff">Disconnect</button></div>
+      <p class="muted small">To connect another laptop to the same sheet: on that laptop paste the same Web app link and this key.</p>
       <div class="confirmbar" id="shConfirm" hidden><span>Stop sending to the Google Sheet? What’s already in the sheet stays there.</span><button type="button" class="btn" id="shNo">Keep</button><button type="button" class="btn danger" id="shYes">Disconnect</button></div>`;
+    $('#shKey').addEventListener('click', async () => { try { await rpc('clipboard.write', await rpc('sync.key')); toast('Key copied. Paste it on the other laptop.'); } catch (e) { toast(e.message, { err: true }); } });
     $('#shNow').addEventListener('click', async () => { $('#shNow').disabled = true; try { await rpc('sync.now'); } catch (e) {} renderSheetCard(); });
     $('#shOff').addEventListener('click', () => { $('#shConfirm').hidden = false; });
     $('#shNo').addEventListener('click', () => { $('#shConfirm').hidden = true; });
     $('#shYes').addEventListener('click', async () => { await rpc('sync.disconnect'); toast('Disconnected from Google Sheet'); renderSheetCard(); });
     return;
   }
-  el.innerHTML = `<p class="muted">One-time setup, about 5 minutes. Do it on this laptop.</p>
+  el.innerHTML = `<div class="confirmbar" style="background:var(--accent-soft);margin-bottom:12px"><span><b>Second laptop?</b> If the sheet is already set up on another laptop, skip steps 1–4: paste the same Web app link below, and the key from that laptop (Settings → Google Sheet → Copy key, or the KEY line at the top of the Apps Script).</span></div>
+    <p class="muted">First laptop: one-time setup, about 5 minutes.</p>
     <ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px">
       <li><button type="button" class="btn" id="shCopy">Copy setup script</button></li>
       <li>Open <a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a> (a new Google Sheet). Name it <b>NRRL Sales</b>.</li>
@@ -1021,6 +1024,7 @@ async function renderSheetCard() {
       <li>Copy the <b>Web app URL</b> (ends with /exec) and paste it here:</li>
     </ol>
     <div style="display:flex;gap:8px"><input type="text" id="shUrl" placeholder="https://script.google.com/macros/s/…/exec" spellcheck="false"><button type="button" class="btn accent" id="shGo">Connect</button></div>
+    <label class="f"><span>Key — only for a second laptop</span><input type="text" id="shKeyIn" placeholder="Leave blank on the first laptop" spellcheck="false"></label>
     <p class="err" id="shErr"></p>`;
   $('#shCopy').addEventListener('click', async () => {
     try { await rpc('clipboard.write', await rpc('sync.script')); toast('Setup script copied. Paste it into Apps Script.'); $('#shCopy').textContent = 'Copied ✓'; }
@@ -1028,7 +1032,7 @@ async function renderSheetCard() {
   });
   $('#shGo').addEventListener('click', async () => {
     $('#shErr').textContent = ''; $('#shGo').disabled = true; $('#shGo').textContent = 'Checking…';
-    try { const r = await rpc('sync.connect', $('#shUrl').value); toast(`Connected. Sending ${r.queued} past bills to the sheet.`); renderSheetCard(); }
+    try { const r = await rpc('sync.connect', $('#shUrl').value, $('#shKeyIn').value); toast(`Connected. Sending ${r.queued} past bills to the sheet.`); renderSheetCard(); }
     catch (e) { $('#shErr').textContent = e.message; $('#shGo').disabled = false; $('#shGo').textContent = 'Connect'; }
   });
 }

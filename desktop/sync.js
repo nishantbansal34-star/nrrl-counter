@@ -19,7 +19,10 @@ function createSync(getStore) {
         if (/<html/i.test(text)) throw new Error('The sheet link did not answer. Check that the Apps Script is deployed with access “Anyone”.');
         throw new Error('Unexpected answer from the sheet.');
       }
-      if (!data.ok) throw new Error(data.error || 'The sheet refused the data.');
+      if (!data.ok) {
+        if (/wrong key/i.test(data.error || '')) throw new Error('Wrong key. If this sheet was set up on another laptop, paste that laptop\'s key in the Key box (on that laptop: Settings → Google Sheet → Copy key, or the KEY line at the top of the Apps Script).');
+        throw new Error(data.error || 'The sheet refused the data.');
+      }
       return data;
     } catch (e) {
       if (e.name === 'AbortError') throw new Error('The sheet took too long to answer.');
@@ -39,7 +42,15 @@ function createSync(getStore) {
       for (let round = 0; round < 10; round++) {
         const rows = st.queuePeek(20);
         if (!rows.length) break;
-        const events = rows.map(r => r.kind === 'bill' ? { type: 'bill', bill: JSON.parse(r.payload) } : r.kind === 'cancel' ? { type: 'cancel', ...JSON.parse(r.payload) } : null).filter(Boolean);
+        // a second laptop's older bills (made before it had its own prefix) get its code in the sheet, so numbers never clash
+        const code = st.getSetting('link_code');
+        const tag = no => (code && code !== 'L1' && !/^(M\d+|L\d+-)/.test(no)) ? code + '-' + no : no;
+        const events = rows.map(r => {
+          const p = JSON.parse(r.payload);
+          if (r.kind === 'bill') return { type: 'bill', bill: { ...p, bill_no: tag(p.bill_no) } };
+          if (r.kind === 'cancel') return { type: 'cancel', bill_no: tag(p.bill_no) };
+          return null;
+        }).filter(Boolean);
         try { await post(url, { key, events }); st.queueDone(rows.map(r => r.id)); }
         catch (e) { st.queueFail(rows.map(r => r.id), e.message); throw e; }
       }
@@ -60,10 +71,14 @@ function createSync(getStore) {
     soon() { setTimeout(() => tick().catch(() => {}), 500); },
     tick,
     status() { const st = getStore(); return { url: st.getSetting('sheet_url'), pending: st.queueCount(), lastOk: state.lastOk, lastError: state.lastError, sending: state.sending }; },
-    async test(url) {
+    key() { return getStore().getSetting('sheet_key'); },
+    async test(url, key) {
       const st = getStore();
-      url = String(url || '').trim();
-      if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url)) throw new Error('Paste the Web app link that ends with /exec.');
+      url = String(url || '').trim().replace(/\?.*$/, '');
+      key = String(key || '').trim();
+      if (key) st.setSetting('sheet_key', key);
+      if (!st.getSetting('sheet_key')) throw new Error('Click “Copy setup script” first, or paste the key from your first laptop.');
+      if (!/^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[\w-]+\/exec$/.test(url)) throw new Error('Paste the Web app link that ends with /exec.');
       await post(url, { key: st.getSetting('sheet_key'), events: [] });
       st.setSetting('sheet_url', url);
       const n = st.queueAllBills();

@@ -75,6 +75,11 @@ function createLink(getStore, onChange) {
     }
     if (changed || newBills) onChange({ items: changed, bills: newBills });
   }
+  // give each laptop its own bill numbers (L2-1, L2-2…) so two laptops never clash
+  function useCode(st, code) {
+    st.setSetting('link_code', code || '');
+    if (code && code !== 'L1' && !st.getSetting('bill_prefix')) st.setSetting('bill_prefix', code + '-');
+  }
   async function tick() {
     const st = getStore();
     if (!st || state.busy) return;
@@ -82,6 +87,7 @@ function createLink(getStore, onChange) {
     if (!key) return;
     state.busy = true;
     try {
+      if (!st.getSetting('link_code')) { try { useCode(st, (await rpc('counter_dev_info', { p_key: key })).code); } catch (e) { if (e.code === 'DEVICE_UNLINKED') throw e; } }
       await pushQueue(st, key);
       await pull(st, key);
       state.lastOk = new Date().toISOString(); state.lastError = '';
@@ -95,14 +101,14 @@ function createLink(getStore, onChange) {
     start() { if (!timer) timer = setInterval(() => tick().catch(() => {}), 10000); setTimeout(() => tick().catch(() => {}), 2000); },
     soon() { setTimeout(() => tick().catch(() => {}), 300); },
     tick,
-    status() { const st = getStore(); return { linked: !!st.getSetting('link_key'), name: st.getSetting('link_name'), pending: st.linkCount(), lastOk: state.lastOk, lastError: state.lastError, busy: state.busy }; },
+    status() { const st = getStore(); return { linked: !!st.getSetting('link_key'), name: st.getSetting('link_name'), code: st.getSetting('link_code'), prefix: st.getSetting('bill_prefix'), pending: st.linkCount(), lastOk: state.lastOk, lastError: state.lastError, busy: state.busy }; },
     owners: async () => (await rpc('counter_staff_list', {})).filter(s => s.role === 'owner'),
     /* First link: log in as an owner, register this laptop, send everything the laptop has (its stock wins),
        then bring in what only the phone app has. */
     async link(staffId, pin, progress) {
       const st = getStore();
       const login = await rpc('counter_login', { p_staff: staffId, p_pin: String(pin || '') });
-      const name = 'Laptop (' + os.hostname() + ')';
+      const name = 'Laptop (' + os.hostname() + ') #' + String(st.getSetting('install_id')).slice(0, 6);
       const reg = await rpc('counter_device_register', { p_token: login.token, p_name: name });
       rpc('counter_logout', { p_token: login.token }).catch(() => {});
       const key = reg.key;
@@ -117,7 +123,7 @@ function createLink(getStore, onChange) {
         await rpc('counter_dev_bill_push', { p_key: key, p_bill: { ...st.getBill(ids[i]), skip_stock: true } });
       }
       st.linkClear();
-      st.setSetting('link_key', key); st.setSetting('link_name', name);
+      st.setSetting('link_key', key); st.setSetting('link_name', name); useCode(st, reg.code);
       st.setSetting('link_items_at', ''); st.setSetting('link_bills_after', '0');
       progress && progress('Bringing in items and bills from the phone app…');
       await pull(st, key);

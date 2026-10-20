@@ -40,6 +40,8 @@ const DEFAULTS = {
   label_mode: 'windows',
   sheet_url: '',
   link_key: '',
+  link_code: '',
+  install_id: '',
   link_name: '',
   link_items_at: '',
   link_bills_after: '0',
@@ -113,6 +115,7 @@ class Store {
     addCol('bill_lines', 'factor', 'real not null default 1');
     const ins = this.db.prepare('insert or ignore into settings(key,value) values(?,?)');
     for (const [k, v] of Object.entries(DEFAULTS)) ins.run(k, v);
+    if (!this.getSetting('install_id')) this.setSetting('install_id', crypto.randomBytes(8).toString('hex'));
   }
 
   /* ---------- settings ---------- */
@@ -353,7 +356,7 @@ class Store {
       this.db.prepare('update bills set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id);
     })();
     this.enqueue('cancel', { bill_no: b.bill_no });
-    if (!/^M\d+$/.test(b.bill_no)) this.linkPush('cancel', { bill_no: b.bill_no });
+    if (!/^(M\d+|L\d+-.*)$/.test(b.bill_no) || (this.getSetting('bill_prefix') && b.bill_no.startsWith(this.getSetting('bill_prefix')))) this.linkPush('cancel', { bill_no: b.bill_no });
     return this.getBill(id);
   }
   summary(from, to) {
@@ -383,7 +386,10 @@ class Store {
   queueFail(ids, err) { const u = this.db.prepare('update sync_queue set tries=tries+1, last_error=? where id=?'); this.db.transaction(() => ids.forEach(i => u.run(String(err).slice(0, 300), i)))(); }
   queueCount() { return this.db.prepare('select count(*) n from sync_queue').get().n; }
   queueAllBills() {
-    const ids = this.db.prepare('select id from bills order by id').all().map(r => r.id);
+    // skip bills that came from another linked laptop (L2-5 etc.) — that laptop sends its own
+    const pre = this.getSetting('bill_prefix');
+    const ids = this.db.prepare('select id, bill_no from bills order by id').all()
+      .filter(r => !/^L\d+-/.test(r.bill_no) || (pre && r.bill_no.startsWith(pre))).map(r => r.id);
     const ins = this.db.prepare('insert into sync_queue(kind,payload,created_at) values(?,?,?)');
     this.db.transaction(() => { for (const id of ids) ins.run('bill', JSON.stringify(this.getBill(id)), nowLocal()); })();
     this.setSetting('items_dirty', '1');
@@ -429,7 +435,11 @@ class Store {
     const has = this.db.prepare('select id from bills where bill_no=?');
     this.db.transaction(() => {
       for (const b of list) {
-        const no = 'M' + b.id;
+        // phone bills: M<id>; another laptop's bills: its code + number, e.g. L2-15
+        let no = 'M' + b.id;
+        const fromPc = b.source === 'pc';
+        const m = fromPc ? /^pc-(L\d+)-(.*)$/.exec(b.client_id || '') : null;
+        if (m) no = m[2].startsWith(m[1] + '-') ? m[2] : m[1] + '-' + m[2];
         if (has.get(no)) { if (b.deleted) this.db.prepare('update bills set cancelled=1 where bill_no=? and cancelled=0').run(no); continue; }
         const lines = Array.isArray(b.lines) ? b.lines : [];
         const qty = r2(lines.reduce((a, l) => a + (+l.qty || 0), 0));
@@ -438,7 +448,7 @@ class Store {
           lines.length, qty, r2(b.subtotal), r2(b.discount), r2(b.total), r2(b.gst), b.deleted ? 1 : 0);
         const ins = this.db.prepare('insert into bill_lines(bill_id,code,name,unit,hsn,gst,qty,rate,amount,factor) values(?,?,?,?,?,?,?,?,?,?)');
         for (const l of lines) ins.run(info.lastInsertRowid, String(l.code), String(l.name || l.code), l.unit || 'pcs', l.hsn || '', +l.gst || 0, +l.qty || 0, r2(l.price), r2(l.amount), +l.factor || 1);
-        this.enqueue('bill', this.getBill(info.lastInsertRowid));
+        if (!fromPc) this.enqueue('bill', this.getBill(info.lastInsertRowid)); // a laptop sends its own bills to the sheet
         n++;
       }
     })();
