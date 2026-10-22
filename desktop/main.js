@@ -108,6 +108,25 @@ function setupIPC() {
     sync, link, progress: msg => { if (win && !win.isDestroyed()) win.webContents.send('link-progress', msg); },
     copy: text => { clipboard.writeText(String(text)); return true; },
     openUrl: url => { shell.openExternal(url); return true; },
+    printA4: P.printA4,
+    billPdf: async (b, s) => {
+      const dir = path.join(dataDir(), 'Bill PDFs'); fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `Bill-${String(b.bill_no).replace(/[^\w-]+/g, '_')}.pdf`);
+      if (s.pdf_format === 'thermal') return P.billPDF(P.receiptHTML(b, s, {}), file, { receiptWidthMm: s.paper === '58' ? 58 : 80 });
+      return P.billPDF(P.a4HTML(b, s, {}), file);
+    },
+    // a real "copied file" on the Windows clipboard, so Ctrl+V in a WhatsApp chat attaches the PDF
+    copyFile: file => new Promise(resolve => {
+      if (process.platform !== 'win32') return resolve(false);
+      require('child_process').execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -LiteralPath $env:NRRL_FILE'],
+        { env: { ...process.env, NRRL_FILE: file }, windowsHide: true, timeout: 15000 }, err => resolve(!err));
+    }),
+    openWhatsApp: async (phone, text, mode) => {
+      const q = (phone ? 'phone=' + phone + '&' : '') + 'text=' + encodeURIComponent(text);
+      if (mode !== 'web') { try { await shell.openExternal('whatsapp://send?' + q); return; } catch (e) {} }
+      await shell.openExternal('https://web.whatsapp.com/send?' + q);
+    },
+    showFile: file => { shell.showItemInFolder(file); return true; },
   });
   ipcMain.handle('rpc', async (e, method, args) => {
     const fn = H[method];

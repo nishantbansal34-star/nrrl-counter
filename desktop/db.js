@@ -63,6 +63,11 @@ const DEFAULTS = {
   label_show_logo: '1',
   label_logo_invert: '0',
   label_rate_size: '100',
+  bill_format: 'thermal',
+  a4_printer: '',
+  pdf_format: 'a4',
+  wa_mode: 'app',
+  invoice_terms: '',
   staff_cache: '',
   staff_pins: '',
   low_stock: '5',
@@ -72,7 +77,7 @@ const DEFAULTS = {
   next_code: '10001',
 };
 const EDITABLE = new Set(['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'printer', 'paper', 'print_margin', 'font_size',
-  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'label_show_logo', 'label_logo_invert', 'label_rate_size', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
+  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'label_show_logo', 'label_logo_invert', 'label_rate_size', 'bill_format', 'a4_printer', 'pdf_format', 'wa_mode', 'invoice_terms', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
 
 class Store {
   constructor(file) {
@@ -447,6 +452,15 @@ class Store {
     const b = this.db.prepare('select * from bills where id=?').get(id);
     if (!b) return null;
     b.lines = this.db.prepare('select code,name,unit,hsn,gst,qty,rate,amount,factor from bill_lines where bill_id=? order by id').all(id);
+    return b;
+  }
+  billFull(id) {
+    const b = this.getBill(id);
+    if (!b) return null;
+    const c = b.customer_id ? this.db.prepare('select * from customers where id=?').get(b.customer_id) : this.db.prepare('select * from customers where key=?').get(require('./ledger').custKey(b.customer, b.phone));
+    if (c) b.cust = { gstin: c.gstin, address: c.address };
+    const pn = this.db.prepare('select coalesce(sum(amount),0) a from payments where bill_id=? and cancelled=0').get(id).a;
+    if (b.payment === 'udhaar') { b.paidNow = pn || 0; if (c) b.balance = this.customer(c.id).balance; }
     return b;
   }
   lastBill() { const r = this.db.prepare('select id from bills order by id desc limit 1').get(); return r ? this.getBill(r.id) : null; }

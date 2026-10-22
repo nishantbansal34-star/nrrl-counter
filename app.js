@@ -783,6 +783,53 @@ function billText(b) {
   s += `\n\nThank you for shopping with us! 🎈\nnrrl.in`;
   return s;
 }
+/* Bill as a PDF, shared from the phone (pick WhatsApp, then the customer). Android app only. */
+function billPdf(b) {
+  const { jsPDF } = window.NrrlNative;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const R = n => 'Rs. ' + (Math.round((+n || 0) * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const asc = t => String(t ?? '').replace(/₹/g, 'Rs.').replace(/[^\x20-\x7e]/g, '');
+  const d = new Date(b.created_at);
+  let y = 18;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text(asc(CFG.shop), 15, y);
+  doc.setFontSize(13); doc.text('BILL', 195, y, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  y += 7; doc.text(asc('nrrl.in'), 15, y);
+  doc.text(`No. ${b.id ? b.id : 'pending'}   ${d.toLocaleDateString('en-IN')} ${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`, 195, y, { align: 'right' });
+  y += 4; doc.setLineWidth(0.5); doc.line(15, y, 195, y);
+  y += 7; doc.setFont('helvetica', 'bold'); doc.text('Bill to: ', 15, y); doc.setFont('helvetica', 'normal'); doc.text(asc(b.customer || 'Cash customer') + (b.phone ? '   ' + asc(b.phone) : ''), 31, y);
+  doc.text('Payment: ' + (b.payment === 'upi' ? 'UPI' : b.payment === 'udhaar' ? 'Udhaar (credit)' : 'Cash') + (b.mode === 'wholesale' ? '  (wholesale rates)' : ''), 195, y, { align: 'right' });
+  y += 8; doc.setFillColor(240, 238, 247); doc.rect(15, y - 5, 180, 7, 'F'); doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+  doc.text('#', 17, y); doc.text('ITEM', 25, y); doc.text('QTY', 130, y, { align: 'right' }); doc.text('RATE', 160, y, { align: 'right' }); doc.text('AMOUNT', 193, y, { align: 'right' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+  b.lines.forEach((l, i) => {
+    y += 7;
+    if (y > 270) { doc.addPage(); y = 20; }
+    const nm = doc.splitTextToSize(asc(l.name), 95);
+    doc.text(String(i + 1), 17, y); doc.text(nm, 25, y);
+    doc.text(`${l.qty} ${asc(l.unit || '')}`, 130, y, { align: 'right' }); doc.text(R(l.price).slice(4), 160, y, { align: 'right' }); doc.text(R(l.amount).slice(4), 193, y, { align: 'right' });
+    y += (nm.length - 1) * 4.5;
+    doc.setDrawColor(220); doc.line(15, y + 2.5, 195, y + 2.5);
+  });
+  y += 10; doc.setFontSize(10);
+  const row = (k, v, bold) => { doc.setFont('helvetica', bold ? 'bold' : 'normal'); if (bold) doc.setFontSize(13); doc.text(k, 140, y); doc.text(v, 193, y, { align: 'right' }); doc.setFontSize(10); y += bold ? 8 : 6; };
+  row('Subtotal', R(b.subtotal));
+  if (+b.discount) row('Discount', '- ' + R(b.discount));
+  row('Total', R(b.total), true);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.text(`Prices include GST (${R(b.gst)}).`, 15, y);
+  y += 12; doc.setFontSize(11); doc.text('Thank you for shopping with us!', 15, y);
+  return doc.output('datauristring').split(',')[1];
+}
+const canPdf = () => !!(window.NrrlNative && window.NrrlNative.native && window.NrrlNative.jsPDF && window.NrrlNative.Share);
+async function sharePdf(b) {
+  const N = window.NrrlNative;
+  try {
+    toast('Making the PDF…');
+    const name = `Bill-${b.id || Date.now()}.pdf`;
+    const w = await N.Filesystem.writeFile({ path: name, data: billPdf(b), directory: N.Directory.Cache });
+    await N.Share.share({ title: 'Bill ' + (b.id || ''), text: `${CFG.shop} · Bill ${b.id || ''} · ₹${b.total}`, files: [w.uri], dialogTitle: 'Send bill PDF' });
+  } catch (e) { if (!/cancel/i.test(String(e && e.message))) toast('Could not share the PDF: ' + (e.message || e), true); }
+}
 function waLink(b) { let p = String(b.phone || '').replace(/\D/g, ''); if (p.length === 10) p = '91' + p; return 'https://wa.me/' + p + '?text=' + encodeURIComponent(billText(b)); }
 
 /* ---------------- sheets ---------------- */
@@ -803,11 +850,13 @@ function showDone(b, offline) {
     <div class="done-total">${money(b.total)}</div>
     <p class="s">${b.lines.length} items · ${b.payment === 'upi' ? 'UPI' : b.payment === 'udhaar' ? 'Udhaar' : 'Cash'}${b.customer ? ' · ' + esc(b.customer) : ''}${offline ? '<br>No internet right now. It uploads by itself when the connection is back.' : ''}</p>
     <div class="acts2">
-      <a class="btn" href="${esc(waLink(b))}" target="_blank" rel="noopener">WhatsApp bill</a>
-      <button class="btn primary" type="button" id="nextBtn">Next customer</button>
+      ${canPdf() ? '<button class="btn" type="button" id="pdfBtn">WhatsApp PDF</button>' : ''}
+      <a class="btn" href="${esc(waLink(b))}" target="_blank" rel="noopener">${canPdf() ? 'WhatsApp text' : 'WhatsApp bill'}</a>
+      <button class="btn primary${canPdf() ? ' w' : ''}" type="button" id="nextBtn">Next customer</button>
     </div>
     <p class="hint" style="margin-top:10px">Scanning the next item also starts a new bill.</p>`);
   $('#nextBtn', d).addEventListener('click', closeSheet);
+  $('#pdfBtn', d)?.addEventListener('click', () => sharePdf(b));
   $('#nextBtn', d).focus();
 }
 
@@ -954,12 +1003,13 @@ function billRow(b) {
       <span class="chip${b.payment === 'udhaar' ? ' low' : ''}">${b.payment === 'upi' ? 'UPI' : b.payment === 'udhaar' ? 'Udhaar' : 'Cash'}</span>${b.mode === 'wholesale' ? '<span class="chip acc">Wholesale</span>' : ''}${b.voided ? '<span class="chip out">Cancelled</span>' : ''}</span>
   </button>${open ? `<div class="detail"><table>${b.lines.map(l => `<tr><td>${esc(l.name)}<div class="hint">${l.qty} ${esc(l.unit || '')} × ${money(l.price)}</div></td><td>${money(l.amount)}</td></tr>`).join('')}
     ${+b.discount ? `<tr><td>Discount</td><td>−${money(b.discount)}</td></tr>` : ''}<tr><td><b>Total</b> <span class="hint">incl. GST ${money(b.gst)}</span></td><td><b>${money(b.total)}</b></td></tr></table>
-    <div class="acts">${b.voided ? '' : `<a class="btn sm primary" href="${esc(waLink(b))}" target="_blank" rel="noopener">WhatsApp</a>`}
+    <div class="acts">${b.voided ? '' : `${canPdf() ? `<button class="btn sm primary" type="button" data-pdf="${b.id}">WhatsApp PDF</button>` : ''}<a class="btn sm${canPdf() ? '' : ' primary'}" href="${esc(waLink(b))}" target="_blank" rel="noopener">WhatsApp${canPdf() ? ' text' : ''}</a>`}
     ${can('cancel') && !b.voided ? `<button class="btn sm danger" type="button" data-void="${b.id}">Cancel bill</button>` : ''}</div>
     <div class="confirm" data-vc="${b.id}" hidden><span>Cancel bill #${b.id}? Items go back into stock.</span><button class="btn sm" type="button" data-keep>Keep</button><button class="btn sm danger" type="button" data-voidyes="${b.id}">Cancel bill</button></div>
   </div>` : ''}</li>`;
 }
 async function onBillClick(e) {
+  const pb = e.target.closest('[data-pdf]'); if (pb) { const bb = bills.find(x => x.id === +pb.dataset.pdf); if (bb) sharePdf(bb); return; }
   const t = e.target.closest('[data-open],[data-void],[data-voidyes],[data-keep]'); if (!t) return;
   if (t.dataset.open) { const id = +t.dataset.open; openBill = openBill === id ? null : id; renderBills(false); return; }
   if (t.hasAttribute('data-keep')) { t.closest('.confirm').hidden = true; return; }

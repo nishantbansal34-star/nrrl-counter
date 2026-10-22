@@ -286,6 +286,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'F9') { e.preventDefault(); saveBill(true); }
   else if (k === 'F10') { e.preventDefault(); saveBill(false); }
   else if (e.ctrlKey && k.toLowerCase() === 'p') { e.preventDefault(); reprintLast(); }
+  else if (e.altKey && k.toLowerCase() === 'w') { e.preventDefault(); if (S.lastBill) sendWhatsApp(S.lastBill); }
   else if (e.ctrlKey && /^[1-9]$/.test(k)) { const it = topItems(9)[+k - 1]; if (it) { e.preventDefault(); addItem(it); focusScan(); } }
   else if (e.altKey && /^[1-4]$/.test(k)) { e.preventDefault(); S.cart.payment = PAY[+k - 1][0]; saveCart(); renderTotals(); }
   else if ((document.activeElement === document.body || /^(BUTTON|A)$/.test(document.activeElement?.tagName)) && k.length === 1 && !e.ctrlKey && !e.altKey) { focusScan(); }
@@ -525,7 +526,7 @@ function renderTotals() {
       <button type="button" class="btn" id="saveOnly" ${c.lines.length ? '' : 'disabled'}>Save only <kbd>F10</kbd></button>
       <button type="button" class="btn" id="clearB" ${c.lines.length ? '' : 'disabled'}>Clear <kbd>Esc</kbd></button>
     </div>
-    ${lb ? `<div class="lastbill"><span>Last bill <b>#${esc(lb.bill_no)}</b> · <span class="num">${money(lb.total)}</span></span><button type="button" class="btn" id="reprint">Reprint <kbd>Ctrl+P</kbd></button></div>` : ''}`;
+    ${lb ? `<div class="lastbill"><span>Last bill <b>#${esc(lb.bill_no)}</b> · <span class="num">${money(lb.total)}</span></span><span style="display:flex;gap:6px"><button type="button" class="btn" id="waLast" title="Send the bill as a PDF on WhatsApp">WhatsApp <kbd>Alt+W</kbd></button><button type="button" class="btn" id="reprint">Reprint <kbd>Ctrl+P</kbd></button></span></div>` : ''}`;
   $('#disc').addEventListener('change', e => { c.discount = Math.max(0, r2(e.target.value)); saveCart(); renderTotals(); });
   $('#disc').addEventListener('keydown', e => { if (e.key === 'Enter') { e.target.blur(); focusScan(); } });
   $('#recv')?.addEventListener('input', e => { c.received = e.target.value; saveCart(); const ch = $('.change'); const rec2 = r2(e.target.value); if (rec2 > 0) { if (!ch) renderTotalsKeepFocus('recv'); else { const d = r2(rec2 - t.total); ch.innerHTML = `<span>${d >= 0 ? 'Return to customer' : 'Still to collect'}</span><span class="num">${money(Math.abs(d))}</span>`; } } else if (ch) ch.remove(); });
@@ -546,6 +547,7 @@ function renderTotals() {
   $('#saveOnly').addEventListener('click', () => saveBill(false));
   $('#clearB').addEventListener('click', () => { clearArm = Date.now(); clearBill(); });
   $('#reprint')?.addEventListener('click', reprintLast);
+  $('#waLast')?.addEventListener('click', () => S.lastBill && sendWhatsApp(S.lastBill));
 }
 function renderTotalsKeepFocus(id) { const pos = $('#' + id)?.selectionStart; renderTotals(); const el = $('#' + id); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) {} } }
 
@@ -568,17 +570,39 @@ async function saveBill(print) {
     renderCart(); focusScan();
     if (print) {
       toast(`Bill #${bill.bill_no} saved · ${money(bill.total)} · printing…`);
-      rpc('print.receipt', bill.id).catch(err => toast(`Bill #${bill.bill_no} is saved, but it did not print: ${err.message}`, { err: true, ms: 9000, action: 'Retry', onAction: () => reprintLast() }));
+      rpc('print.bill', bill.id, '').catch(err => toast(`Bill #${bill.bill_no} is saved, but it did not print: ${err.message}`, { err: true, ms: 9000, action: 'Retry', onAction: () => reprintLast() }));
     } else toast(`Bill #${bill.bill_no} saved · ${money(bill.total)}`);
   } catch (err) {
     toast(err.message, { err: true });
   } finally { saving = false; }
 }
+/* Bill as a PDF on WhatsApp: the PDF is made and copied, WhatsApp opens on the customer's chat — press Ctrl+V, then Enter. */
+async function sendWhatsApp(b) {
+  let phone = b.phone || '';
+  if (String(phone).replace(/\D/g, '').length < 10) {
+    phone = await new Promise(resolve => {
+      const m = openModal(`<h2>Send bill #${esc(b.bill_no)} on WhatsApp</h2><label class="f"><span>Customer’s WhatsApp number</span><input type="tel" id="waNo" placeholder="10-digit mobile number" value="${esc(b.phone || '')}"></label>
+        <p class="muted small">Leave it blank to choose the chat yourself in WhatsApp.</p>
+        <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="waGo">Make PDF &amp; open WhatsApp</button></div>`, { onClose: () => resolve(null) });
+      setTimeout(() => $('#waNo', m).focus(), 30);
+      const go = () => { const v = $('#waNo', m).value; m._onClose = null; closeModal(m); resolve(v); };
+      $('#waGo', m).addEventListener('click', go);
+      $('#waNo', m).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+    });
+    if (phone === null) return;
+  }
+  toast('Making the PDF…');
+  try {
+    const r = await rpc('bills.whatsapp', b.id, phone);
+    toast(r.copied ? 'WhatsApp is opening. In the chat press Ctrl+V to attach the bill PDF, then Enter.' : 'WhatsApp is opening. Attach the PDF from the folder that opens.', { ms: 12000, action: 'Show PDF file', onAction: () => rpc('bills.showFile', r.file) });
+    if (!r.copied) rpc('bills.showFile', r.file);
+  } catch (err) { toast('Could not make the PDF: ' + err.message, { err: true, ms: 8000 }); }
+}
 async function reprintLast() {
   const b = S.lastBill || await rpc('bills.last').catch(() => null);
   if (!b) { toast('No bills yet.'); return; }
   toast(`Reprinting bill #${b.bill_no}…`);
-  rpc('print.receipt', b.id, true).catch(err => toast('Did not print: ' + err.message, { err: true, ms: 8000 }));
+  rpc('print.bill', b.id, '', true).catch(err => toast('Did not print: ' + err.message, { err: true, ms: 8000 }));
 }
 
 /* ================= item form ================= */
@@ -1096,11 +1120,21 @@ async function openBill(id) {
         <div class="err" id="bErr"></div>
         <div class="confirmbar" id="bConfirm" hidden><span>Cancel bill #${esc(b.bill_no)}? Its items go back into stock. The bill stays in the records marked cancelled.</span><button type="button" class="btn" id="bNo">Keep bill</button><button type="button" class="btn danger" id="bYes">Cancel bill</button></div>
       </div>
-      <iframe title="Receipt preview" sandbox srcdoc="${esc(html)}"></iframe>
+      <div style="display:flex;flex-direction:column;gap:6px;min-height:0"><div class="seg" id="bPrev"><button type="button" data-v="thermal" aria-pressed="true">Receipt</button><button type="button" data-v="a4" aria-pressed="false">A4 invoice</button></div>
+      <iframe title="Bill preview" id="bFrame" sandbox srcdoc="${esc(html)}"></iframe></div>
     </div>
-    <div class="foot">${b.cancelled || +b.returned ? '' : '<button type="button" class="btn danger left" id="bCancel">Cancel bill</button>'}${b.cancelled ? '' : '<button type="button" class="btn" id="bReturn">Return items</button>'}<button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="bPrint">Reprint</button></div>`, { wide: true });
+    <div class="foot">${b.cancelled || +b.returned ? '' : '<button type="button" class="btn danger left" id="bCancel">Cancel bill</button>'}${b.cancelled ? '' : '<button type="button" class="btn" id="bReturn">Return items</button>'}<button type="button" class="btn" data-close>Close</button><button type="button" class="btn" id="bPdf">Save PDF</button><button type="button" class="btn" id="bWa">WhatsApp PDF</button><button type="button" class="btn" id="bA4">Print A4</button><button type="button" class="btn accent" id="bPrint">Print receipt</button></div>`, { wide: true });
+  $('#bPrev', m).addEventListener('click', async e => {
+    const x = e.target.closest('[data-v]'); if (!x) return;
+    $$('#bPrev button', m).forEach(y => y.setAttribute('aria-pressed', y === x));
+    const f = $('#bFrame', m);
+    if (x.dataset.v === 'a4') { f.srcdoc = await rpc('print.a4preview', b.id); f.classList.add('a4'); } else { f.srcdoc = html; f.classList.remove('a4'); }
+  });
+  $('#bA4', m).addEventListener('click', () => rpc('print.bill', b.id, 'a4', true).then(() => toast('Sent to the A4 printer')).catch(err => { $('#bErr', m).textContent = err.message; }));
+  $('#bWa', m).addEventListener('click', () => sendWhatsApp(b));
+  $('#bPdf', m).addEventListener('click', () => rpc('bills.pdf', b.id).then(f => toast('PDF saved', { action: 'Show file', onAction: () => rpc('bills.showFile', f) })).catch(err => { $('#bErr', m).textContent = err.message; }));
   $('#bReturn', m)?.addEventListener('click', async () => { if (await requirePerm('cancel', 'Returns need the owner')) { m._onClose = null; closeModal(m); openReturn(b.id); } });
-  $('#bPrint', m).addEventListener('click', () => rpc('print.receipt', b.id, true).then(() => toast('Sent to printer')).catch(err => { $('#bErr', m).textContent = err.message; }));
+  $('#bPrint', m).addEventListener('click', () => rpc('print.bill', b.id, 'thermal', true).then(() => toast('Sent to printer')).catch(err => { $('#bErr', m).textContent = err.message; }));
   $('#bCancel', m)?.addEventListener('click', async () => { if (await requirePerm('cancel', 'Cancelling a bill needs the owner')) $('#bConfirm', m).hidden = false; });
   $('#bNo', m)?.addEventListener('click', () => { $('#bConfirm', m).hidden = true; });
   $('#bYes', m)?.addEventListener('click', async () => {
@@ -1467,7 +1501,14 @@ async function renderSettings() {
         <label class="f"><span>Side margin (mm)</span><input type="number" step="0.5" id="s_print_margin" value="${esc(s.print_margin)}" placeholder="Auto"></label>
         <label class="f"><span>Text size (px)</span><input type="number" step="0.5" id="s_font_size" value="${esc(s.font_size)}" placeholder="Auto"></label>
       </div>
-      <div class="toolbar"><button type="button" class="btn" id="testPrint">Print test receipt</button><button type="button" class="btn" id="prevPrint">Preview</button><button type="button" class="btn" id="refPrinters">Refresh printer list</button></div></section>
+      <div class="form2" style="margin-top:4px">
+        <label class="f"><span>“Save &amp; print” prints</span><select id="s_bill_format"><option value="thermal"${s.bill_format !== 'a4' ? ' selected' : ''}>Thermal receipt</option><option value="a4"${s.bill_format === 'a4' ? ' selected' : ''}>A4 invoice</option></select></label>
+        <label class="f"><span>A4 printer</span><select id="s_a4_printer">${opt(s.a4_printer).replace('Windows default printer', 'Ask each time (Windows print window)')}</select></label>
+        <label class="f"><span>Bill PDF for WhatsApp</span><select id="s_pdf_format"><option value="a4"${s.pdf_format !== 'thermal' ? ' selected' : ''}>A4 invoice</option><option value="thermal"${s.pdf_format === 'thermal' ? ' selected' : ''}>Receipt size</option></select></label>
+        <label class="f"><span>WhatsApp on this laptop</span><select id="s_wa_mode"><option value="app"${s.wa_mode !== 'web' ? ' selected' : ''}>WhatsApp app</option><option value="web"${s.wa_mode === 'web' ? ' selected' : ''}>WhatsApp Web (browser)</option></select></label>
+        <label class="f w"><span>Terms printed on A4 invoices (optional)</span><textarea id="s_invoice_terms" rows="2" placeholder="e.g. Goods once sold will be exchanged within 7 days with bill.">${esc(s.invoice_terms)}</textarea></label>
+      </div>
+      <div class="toolbar"><button type="button" class="btn" id="testPrint">Print test receipt</button><button type="button" class="btn" id="prevPrint">Preview</button><button type="button" class="btn" id="prevA4">Preview A4</button><button type="button" class="btn" id="refPrinters">Refresh printer list</button></div></section>
     <section class="card"><h2>Barcode labels</h2>
       <p class="muted">For items without a barcode: click <b>Make code</b> on the item, then print labels and stick them on the packet or bin.</p>
       <div><div class="lbl" style="margin-bottom:6px">Label sizes — click one to use and adjust it</div>
@@ -1535,7 +1576,7 @@ async function renderSettings() {
     </div>
     <div class="toolbar" style="position:sticky;bottom:0;padding:14px 0 0;background:var(--bg);margin-top:14px"><button type="button" class="btn primary big" id="sSave" style="min-width:220px">Save settings</button><span class="muted small" id="sMsg"></span><span class="muted small" style="margin-left:auto">NRRL Billing v${esc(info.version)}</span></div>
   </div>`;
-  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density', 'label_rate_size', 'wcode_prefix', 'wcode_mult'];
+  const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density', 'label_rate_size', 'bill_format', 'a4_printer', 'pdf_format', 'wa_mode', 'invoice_terms', 'wcode_prefix', 'wcode_mult'];
   const collect = () => {
     const o = {}; for (const k of keys) o[k] = $('#s_' + k).value;
     if ($('#s_label_show_logo')) { o.label_show_logo = $('#s_label_show_logo').checked ? '1' : '0'; o.label_logo_invert = $('#s_label_logo_invert').checked ? '1' : '0'; }
@@ -1550,6 +1591,7 @@ async function renderSettings() {
   $('#s_wcode_prefix').addEventListener('input', wEx); $('#s_wcode_mult').addEventListener('input', wEx); wEx();
   $('#sSave').addEventListener('click', () => save(false));
   $('#testPrint').addEventListener('click', async () => { if (!(await save(true))) return; rpc('print.test').then(() => toast('Test receipt sent')).catch(err => toast(err.message, { err: true, ms: 9000 })); });
+  $('#prevA4').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.a4preview', 'sample'); openModal(`<h2>A4 invoice preview</h2><div style="display:flex;justify-content:center;background:var(--sunk);border-radius:8px;padding:12px;overflow:auto"><iframe title="A4 preview" sandbox srcdoc="${esc(html)}" style="border:0;width:794px;height:70vh;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`, { wide: true }); });
   $('#prevPrint').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.preview', 'sample'); openModal(`<h2>Receipt preview</h2><p class="muted">Paper ${esc(S.settings.paper)} mm. The real print may look slightly different depending on the printer.</p><div style="display:flex;justify-content:center"><iframe title="Receipt preview" sandbox srcdoc="${esc(html)}" style="border:1px solid var(--line);width:${S.settings.paper === '58' ? 240 : 330}px;height:560px;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`); });
   $('#prevLabel').addEventListener('click', async () => {
     if (!(await save(true))) return;

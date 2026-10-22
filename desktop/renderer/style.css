@@ -221,3 +221,4 @@ table.grid tr.cx td { color: var(--muted); text-decoration: line-through; }
 #pScan { padding-left: 16px; height: 46px; font-size: 16px; }
 #pSugg { top: 50px; }
 table.grid tr.warnrow td:nth-child(3) { color: var(--bad); font-weight: 600; }
+.preview iframe.a4 { width: 560px; }

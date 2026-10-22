@@ -126,7 +126,7 @@ function makeHandlers(ctx) {
     'reports.items': (from, to) => st().itemSales(from, to),
 
     'print.receipt': async (id, duplicate) => {
-      const b = st().getBill(id);
+      const b = st().billFull(id);
       if (!b) throw new Error('Bill not found.');
       await ctx.printReceipt(b, settings(), { duplicate: !!duplicate });
       return true;
@@ -134,8 +134,29 @@ function makeHandlers(ctx) {
     'print.preview': (id, duplicate) => {
       const b = id === 'sample' ? P.sampleBill() : st().getBill(id);
       if (!b) throw new Error('Bill not found.');
-      return P.receiptHTML(b, settings(), { duplicate: !!duplicate });
+      return P.receiptHTML(id === 'sample' ? b : st().billFull(id), settings(), { duplicate: !!duplicate });
     },
+    // A4 invoice or thermal receipt; format '' = the default chosen in Settings
+    'print.bill': async (id, format, duplicate) => {
+      const b = st().billFull(id); if (!b) throw new Error('Bill not found.');
+      const s = settings(), f = format || s.bill_format || 'thermal';
+      if (f === 'a4') await ctx.printA4(b, s, { duplicate: !!duplicate });
+      else await ctx.printReceipt(b, s, { duplicate: !!duplicate });
+      return f;
+    },
+    'print.a4preview': id => { const b = id === 'sample' ? P.sampleBill() : st().billFull(id); if (!b) throw new Error('Bill not found.'); return P.a4HTML(b, settings(), {}); },
+    'bills.pdf': async id => { const b = st().billFull(id); if (!b) throw new Error('Bill not found.'); return ctx.billPdf(b, settings()); },
+    // makes the PDF, puts it on the clipboard and opens the customer's WhatsApp chat: press Ctrl+V, then Enter
+    'bills.whatsapp': async (id, phone) => {
+      const b = st().billFull(id); if (!b) throw new Error('Bill not found.');
+      const s = settings(), file = await ctx.billPdf(b, s);
+      const copied = await ctx.copyFile(file).catch(() => false);
+      let p = String(phone || b.phone || '').replace(/\D/g, ''); if (p.length === 10) p = '91' + p;
+      const text = `${s.shop_name || 'NRRL'} · Bill ${b.bill_no} · ₹${b.total}. Thank you!`;
+      await ctx.openWhatsApp(p, text, s.wa_mode);
+      return { file, copied, phone: p };
+    },
+    'bills.showFile': file => ctx.showFile(file),
     'print.test': async () => { await ctx.printReceipt(P.sampleBill(), settings(), {}); return true; },
     'print.labels': async (list, show) => {
       // list: [{code, count}]; show: {retail, wholesale} chosen in the print window (remembered for next time)

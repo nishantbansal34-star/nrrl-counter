@@ -96,6 +96,108 @@ function returnBill(r, bill) {
     lines: r.lines.map(l => ({ ...l })),
   };
 }
+
+/* ---------- A4 invoice (for A4 printers and the PDF sent on WhatsApp) ---------- */
+function inWords(n) {
+  const a = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const t = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const two = x => x < 20 ? a[x] : t[Math.floor(x / 10)] + (x % 10 ? ' ' + a[x % 10] : '');
+  const three = x => (x >= 100 ? a[Math.floor(x / 100)] + ' Hundred' + (x % 100 ? ' ' : '') : '') + two(x % 100);
+  const words = x => {
+    if (!x) return 'Zero';
+    const out = [];
+    const cr = Math.floor(x / 1e7); x %= 1e7; const lk = Math.floor(x / 1e5); x %= 1e5; const th = Math.floor(x / 1000); x %= 1000;
+    if (cr) out.push(words(cr) + ' Crore'); if (lk) out.push(two(lk) + ' Lakh'); if (th) out.push(two(th) + ' Thousand'); if (x) out.push(three(x));
+    return out.join(' ');
+  };
+  n = Math.round((+n || 0) * 100) / 100;
+  const r = Math.floor(n), p = Math.round((n - r) * 100);
+  return 'Rupees ' + words(r) + (p ? ' and ' + two(p) + ' Paise' : '') + ' Only';
+}
+function a4HTML(b, s, opts = {}) {
+  const f = b.subtotal > 0 ? b.total / b.subtotal : 1, gstOn = !!s.gstin, by = {};
+  const rows = b.lines.map((l, i) => {
+    const g = +l.gst || 0, gross = l.amount * f, taxable = gross * 100 / (100 + g);
+    by[g] = by[g] || { t: 0, tax: 0 }; by[g].t += taxable; by[g].tax += gross - taxable;
+    return `<tr><td class="c">${i + 1}</td><td><b>${esc(l.name)}</b>${l.code ? `<div class="mut">${esc(l.code)}</div>` : ''}</td>${gstOn ? `<td class="c">${esc(l.hsn || '')}</td>` : ''}
+      <td class="r">${qf(l.qty)} ${esc(l.unit)}</td><td class="r">${n2(l.rate)}</td>${gstOn ? `<td class="r">${g}%</td>` : ''}<td class="r">${n2(l.amount)}</td></tr>`;
+  }).join('');
+  const gstRows = Object.keys(by).map(Number).sort((x, y) => x - y).map(g => `<tr><td>${g}%</td><td class="r">${n2(by[g].t)}</td><td class="r">${n2(by[g].tax / 2)}</td><td class="r">${n2(by[g].tax / 2)}</td><td class="r">${n2(by[g].tax)}</td></tr>`).join('');
+  const addr = String(s.shop_address || '').split(/\r?\n/).filter(Boolean).map(esc).join('<br>');
+  const terms = String(s.invoice_terms || s.footer || '').split(/\r?\n/).filter(Boolean).map(esc).join('<br>');
+  const c = b.cust || {};
+  const title = opts.title || (gstOn ? 'TAX INVOICE' : 'INVOICE');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)} ${esc(b.bill_no)}</title><style>
+    @page{size:A4;margin:12mm}
+    *{box-sizing:border-box}
+    html,body{margin:0;background:#fff;color:#111;font-family:"Segoe UI",Arial,sans-serif;font-size:11.5pt;line-height:1.35;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .hd{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #111;padding-bottom:10px}
+    .shop{display:flex;gap:12px;align-items:center}
+    .shop img{max-height:60px;max-width:160px}
+    .shop h1{margin:0;font-size:20pt;letter-spacing:-.01em}
+    .ttl{text-align:right}
+    .ttl h2{margin:0;font-size:15pt;letter-spacing:.12em}
+    .ttl .no{font-size:12pt;margin-top:4px}
+    .mut{color:#666;font-size:9pt}
+    .parties{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:12px 0}
+    .box{border:1px solid #bbb;border-radius:6px;padding:8px 10px;min-height:64px}
+    .box .lbl{font-size:8.5pt;letter-spacing:.08em;text-transform:uppercase;color:#666;margin-bottom:2px}
+    table{width:100%;border-collapse:collapse}
+    .items th{background:#f0eef7;font-size:9pt;text-transform:uppercase;letter-spacing:.05em;text-align:left;padding:6px;border-bottom:1px solid #999}
+    .items td{padding:6px;border-bottom:1px solid #ddd;vertical-align:top}
+    .r{text-align:right;white-space:nowrap}.c{text-align:center}
+    .sum{display:grid;grid-template-columns:1.3fr 1fr;gap:16px;margin-top:12px;align-items:start}
+    .tot td{padding:3px 6px}.tot .g td{font-size:14pt;font-weight:800;border-top:2px solid #111;padding-top:6px}
+    .gst th,.gst td{font-size:9pt;padding:3px 6px;border-bottom:1px solid #ddd;text-align:left}.gst th{color:#555}
+    .words{margin-top:8px;font-weight:600}
+    .foot{display:flex;justify-content:space-between;gap:16px;margin-top:28px;align-items:flex-end}
+    .sign{text-align:center;min-width:200px}.sign .line{border-top:1px solid #111;margin-top:46px;padding-top:4px;font-size:9.5pt}
+    .stamp{display:inline-block;border:2px solid #b00;color:#b00;padding:2px 10px;font-weight:800;letter-spacing:.1em;transform:rotate(-4deg)}
+  </style></head><body>
+    <div class="hd"><div class="shop">${s.label_logo ? `<img src="${s.label_logo}" alt="">` : ''}<div><h1>${esc(s.shop_name || 'Shop')}</h1>${addr ? `<div>${addr}</div>` : ''}
+      ${s.shop_phone ? `<div>Phone: ${esc(s.shop_phone)}</div>` : ''}${s.gstin ? `<div><b>GSTIN: ${esc(s.gstin)}</b></div>` : ''}</div></div>
+      <div class="ttl"><h2>${esc(title)}</h2><div class="no">No. <b>${esc(b.bill_no)}</b></div><div>Date: ${esc(fmtDate(b.created_at))}</div>
+        ${b.cancelled ? '<div style="margin-top:6px"><span class="stamp">CANCELLED</span></div>' : ''}${opts.duplicate ? '<div class="mut">Copy</div>' : ''}</div></div>
+    <div class="parties"><div class="box"><div class="lbl">Bill to</div><b>${esc(b.customer || 'Cash customer')}</b>${b.phone ? `<div>Phone: ${esc(b.phone)}</div>` : ''}${c.address ? `<div>${esc(c.address)}</div>` : ''}${c.gstin ? `<div>GSTIN: <b>${esc(c.gstin)}</b></div>` : ''}</div>
+      <div class="box"><div class="lbl">Details</div><div>Payment: <b>${esc(b.payLabel || PAY[b.payment] || b.payment)}</b></div>${b.mode === 'wholesale' ? '<div>Rate: Wholesale</div>' : ''}${b.staff ? `<div>Billed by: ${esc(b.staff)}</div>` : ''}${+b.returned ? `<div>Items returned later: ₹${n2(b.returned)}</div>` : ''}</div></div>
+    <table class="items"><thead><tr><th class="c" style="width:32px">#</th><th>Item</th>${gstOn ? '<th class="c">HSN</th>' : ''}<th class="r">Qty</th><th class="r">Rate</th>${gstOn ? '<th class="r">GST</th>' : ''}<th class="r">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="sum"><div>${gstOn ? `<table class="gst"><tr><th>GST rate</th><th class="r">Taxable value</th><th class="r">CGST</th><th class="r">SGST</th><th class="r">Total tax</th></tr>${gstRows}</table><div class="mut" style="margin-top:4px">Prices include GST.</div>` : ''}
+        <div class="words">${inWords(b.total)}</div></div>
+      <table class="tot"><tr><td>Items ${b.lines.length} · Qty ${qf(b.lines.reduce((x, l) => x + +l.qty, 0))}</td><td class="r">₹${n2(b.subtotal)}</td></tr>
+        ${+b.discount ? `<tr><td>Discount</td><td class="r">−₹${n2(b.discount)}</td></tr>` : ''}
+        <tr class="g"><td>Total</td><td class="r">₹${n2(b.total)}</td></tr>
+        ${b.paidNow ? `<tr><td>Paid now</td><td class="r">₹${n2(b.paidNow)}</td></tr><tr><td>On udhaar</td><td class="r">₹${n2(b.total - b.paidNow)}</td></tr>` : ''}
+        ${b.balance != null ? `<tr><td>Udhaar balance now</td><td class="r">₹${n2(b.balance)}</td></tr>` : ''}</table></div>
+    <div class="foot"><div class="mut" style="max-width:60%">${terms}</div><div class="sign">For ${esc(s.shop_name || '')}<div class="line">Authorised signatory</div></div></div>
+  </body></html>`;
+}
+/* Save a bill as a PDF file (A4 invoice, or receipt-sized). */
+async function billPDF(html, file, { receiptWidthMm } = {}) {
+  const { BrowserWindow } = require('electron');
+  const fs = require('fs');
+  const win = new BrowserWindow({ show: false, width: receiptWidthMm ? Math.round(receiptWidthMm * 96 / 25.4) + 4 : 900, height: 1200, webPreferences: { sandbox: true } });
+  try {
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    let opt = { printBackground: true, pageSize: 'A4', preferCSSPageSize: true };
+    if (receiptWidthMm) {
+      const px = await win.webContents.executeJavaScript('Math.ceil(document.body.getBoundingClientRect().height)');
+      opt = { printBackground: true, margins: { marginType: 'none' }, pageSize: { width: receiptWidthMm / 25.4, height: Math.max(3, (px + 20) / 96) } };
+    }
+    const buf = await win.webContents.printToPDF(opt);
+    fs.writeFileSync(file, buf);
+    return file;
+  } finally { if (!win.isDestroyed()) win.destroy(); }
+}
+async function printA4(b, s, opts) {
+  // a chosen A4 printer prints straight away; otherwise the Windows print window opens so you can pick one
+  const { BrowserWindow } = require('electron');
+  const win = new BrowserWindow({ show: false, width: 900, height: 1200, webPreferences: { sandbox: true } });
+  try {
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(a4HTML(b, s, opts)));
+    await new Promise((resolve, reject) => win.webContents.print({ silent: !!s.a4_printer, printBackground: true, deviceName: s.a4_printer || undefined, pageSize: 'A4' },
+      (ok, why) => ok || why === 'cancelled' ? resolve() : reject(new Error('A4 printer did not respond' + (why ? ` (${why})` : '') + '.'))));
+  } finally { if (!win.isDestroyed()) win.destroy(); }
+}
 function sampleBill() {
   const now = new Date(), p = n => String(n).padStart(2, '0');
   return {
@@ -264,7 +366,7 @@ async function printLabels(entries, s) {
   return count;
 }
 
-module.exports = { returnBill, receiptHTML, labelsHTML, buildLabels, barcodeImage, labelSize, sampleBill, printReceipt, printLabels, printHTML };
+module.exports = { a4HTML, inWords, billPDF, printA4, returnBill, receiptHTML, labelsHTML, buildLabels, barcodeImage, labelSize, sampleBill, printReceipt, printLabels, printHTML };
 
 /* ---------- Direct label printing (TSPL) ----------
    Most barcode label printers (TSC, TVS, Xprinter, Gainscha, iDPRT…) understand TSPL commands.
