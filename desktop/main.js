@@ -107,6 +107,7 @@ function setupIPC() {
     listPrinters, backupNow, backupList, restore, saveText, openText, chooseExtraFolder,
     sync, link, progress: msg => { if (win && !win.isDestroyed()) win.webContents.send('link-progress', msg); },
     copy: text => { clipboard.writeText(String(text)); return true; },
+    openUrl: url => { shell.openExternal(url); return true; },
   });
   ipcMain.handle('rpc', async (e, method, args) => {
     const fn = H[method];

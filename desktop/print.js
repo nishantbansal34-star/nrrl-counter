@@ -62,11 +62,11 @@ function receiptHTML(b, s, opts = {}) {
       ${addr ? `<div>${addr}</div>` : ''}
       ${s.shop_phone ? `<div>Ph: ${esc(s.shop_phone)}</div>` : ''}
       ${s.gstin ? `<div>GSTIN: ${esc(s.gstin)}</div>` : ''}
-      <div class="hr"></div><div class="title">${s.gstin ? 'TAX INVOICE' : 'BILL'}${opts.duplicate ? ' (REPRINT)' : ''}</div>
+      <div class="hr"></div><div class="title">${opts.title ? esc(opts.title) : (s.gstin ? 'TAX INVOICE' : 'BILL')}${opts.duplicate ? ' (REPRINT)' : ''}</div>
       ${b.cancelled ? '<div class="big">*** CANCELLED ***</div>' : ''}
     </div>
     <table class="meta">
-      <tr><td>Bill No: <b>${esc(b.bill_no)}</b></td><td class="r">${esc(fmtDate(b.created_at))}</td></tr>
+      <tr><td>${opts.title ? 'No' : 'Bill No'}: <b>${esc(b.bill_no)}</b></td><td class="r">${esc(fmtDate(b.created_at))}</td></tr>
       ${b.customer ? `<tr><td colspan="2">Customer: ${esc(b.customer)}${b.phone ? ' · ' + esc(b.phone) : ''}</td></tr>` : ''}
       ${b.mode === 'wholesale' ? '<tr><td colspan="2">Rate: Wholesale</td></tr>' : ''}
     </table>
@@ -77,7 +77,8 @@ function receiptHTML(b, s, opts = {}) {
       <tr><td>Items ${b.items_count ?? b.lines.length} · Qty ${qf(b.qty ?? b.lines.reduce((a, l) => a + l.qty, 0))}</td><td class="r">${n2(b.subtotal)}</td></tr>
       ${+b.discount ? `<tr><td>Discount</td><td class="r">-${n2(b.discount)}</td></tr>` : ''}
       <tr class="tot"><td>TOTAL</td><td class="r">₹${n2(b.total)}</td></tr>
-      <tr><td colspan="2">Paid by: ${esc(PAY[b.payment] || b.payment)}</td></tr>
+      <tr><td colspan="2">${b.payLabel ? esc(b.payLabel) : 'Paid by: ' + esc(PAY[b.payment] || b.payment)}</td></tr>
+      ${b.balance != null ? `<tr><td>Udhaar balance now</td><td class="r">₹${n2(b.balance)}</td></tr>` : ''}
     </table>
     ${gstBlock}
     <div class="hr"></div>
@@ -85,6 +86,16 @@ function receiptHTML(b, s, opts = {}) {
   </body></html>`;
 }
 
+/* A return printed like a bill: the items that came back and the money given back. */
+function returnBill(r, bill) {
+  const MODE = { cash: 'Refunded in cash', upi: 'Refunded by UPI', card: 'Refunded to card', account: 'Taken off udhaar account' };
+  return {
+    bill_no: `${r.return_no} (bill ${r.bill_no})`, created_at: r.created_at, mode: bill ? bill.mode : 'retail', payment: r.refund_mode, payLabel: MODE[r.refund_mode] || r.refund_mode,
+    customer: r.customer || (bill && bill.customer) || '', phone: bill ? bill.phone : '', items_count: r.lines.length, qty: r.lines.reduce((a, l) => a + l.qty, 0),
+    subtotal: r.total, discount: 0, total: r.total, gst: r.gst, cancelled: 0,
+    lines: r.lines.map(l => ({ ...l })),
+  };
+}
 function sampleBill() {
   const now = new Date(), p = n => String(n).padStart(2, '0');
   return {
@@ -253,7 +264,7 @@ async function printLabels(entries, s) {
   return count;
 }
 
-module.exports = { receiptHTML, labelsHTML, buildLabels, barcodeImage, labelSize, sampleBill, printReceipt, printLabels, printHTML };
+module.exports = { returnBill, receiptHTML, labelsHTML, buildLabels, barcodeImage, labelSize, sampleBill, printReceipt, printLabels, printHTML };
 
 /* ---------- Direct label printing (TSPL) ----------
    Most barcode label printers (TSC, TVS, Xprinter, Gainscha, iDPRT…) understand TSPL commands.

@@ -3,7 +3,9 @@
 const P = require('./print');
 
 const WRITES = new Set(['sync.connect', 'items.save', 'items.remove', 'items.import', 'items.stockIn', 'items.nextCode', 'bills.save', 'bills.cancel',
-  'settings.save', 'auth.setPin', 'items.fixCodes', 'labels.useSize', 'labels.addSize', 'labels.removeSize', 'labels.setLogo']);
+  'settings.save', 'auth.setPin', 'items.fixCodes', 'labels.useSize', 'labels.addSize', 'labels.removeSize', 'labels.setLogo',
+  'customers.save', 'customers.add', 'payments.receive', 'payments.cancel', 'returns.save', 'suppliers.save', 'suppliers.pay', 'suppliers.cancelPay',
+  'purchases.save', 'purchases.cancel']);
 
 // What a signed-in staff member needs for each action (the owner switches these per person in the phone app).
 const NEED = {
@@ -11,7 +13,11 @@ const NEED = {
   'bills.save': 'bill', 'bills.cancel': 'cancel', 'print.labels': 'labels', 'print.testLabel': 'labels',
   'settings.save': 'settings', 'auth.setPin': 'settings', 'link.connect': 'settings', 'link.unlink': 'settings',
   'sync.connect': 'settings', 'sync.disconnect': 'settings', 'backup.restore': 'settings', 'backup.chooseExtra': 'settings',
-  'labels.addSize': 'settings', 'labels.removeSize': 'settings', 'labels.setLogo': 'settings',
+  'labels.addSize': 'settings',
+  'customers.list': 'sales', 'customers.get': 'sales', 'customers.save': 'edit', 'customers.add': 'bill', 'payments.receive': 'bill', 'payments.cancel': 'cancel',
+  'returns.save': 'cancel', 'purchases.save': 'edit', 'purchases.cancel': 'edit', 'purchases.list': 'edit', 'purchases.get': 'edit',
+  'suppliers.list': 'edit', 'suppliers.get': 'edit', 'suppliers.save': 'edit', 'suppliers.pay': 'edit', 'suppliers.cancelPay': 'edit',
+  'audit.list': 'settings', 'labels.removeSize': 'settings', 'labels.setLogo': 'settings',
 };
 const PERM_DEF = { bill: true, rate: false, stock: true, add: true, edit: false, sales: true, reports: false, cancel: false, labels: true, settings: false };
 
@@ -21,14 +27,43 @@ function makeHandlers(ctx) {
   let user = null, ownerUntil = 0;
   const can = k => !user || user.role === 'owner' || Date.now() < ownerUntil || !!((user.perms && k in user.perms) ? user.perms[k] : PERM_DEF[k]);
   const deny = k => { if (!can(k)) throw new Error('You don’t have access to this. Ask the owner.'); };
+  const who = () => user ? user.name + (user.role !== 'owner' && Date.now() < ownerUntil ? ' (owner PIN)' : '') : (Date.now() < ownerUntil ? 'Owner (PIN)' : 'Counter');
+  const range = (from, to) => st()._range(from, to);
   const H = {
+    'customers.list': q => st().customers(q),
+    'customers.get': id => st().customer(id),
+    'customers.find': (name, phone) => st().customerFind(name, phone),
+    'customers.save': (id, p) => st().saveCustomer(id, p),
+    'customers.add': p => { if (+p.opening && !can('edit')) throw new Error('Only the owner can set an opening balance.'); return st().addCustomer(p); },
+    'customers.udhaarTotal': () => st().udhaarTotal(),
+    'payments.receive': (id, amount, mode, note) => st().receivePayment(id, amount, mode, note),
+    'payments.cancel': id => st().cancelPayment(id),
+    'returns.info': billId => st().returnable(billId),
+    'returns.save': p => st().saveReturn(p),
+    'returns.list': (from, to) => st().listReturns(...range(from, to)),
+    'returns.get': id => st().getReturn(id),
+    'print.return': async id => { const r = st().getReturn(id); if (!r) throw new Error('Return not found.'); await ctx.printReceipt(P.returnBill(r, st().getBill(r.bill_id)), settings(), { title: 'RETURN / CREDIT NOTE' }); return true; },
+    'suppliers.list': () => st().suppliers(),
+    'suppliers.get': id => st().supplier(id),
+    'suppliers.save': (id, p) => st().saveSupplier(id, p),
+    'suppliers.pay': (id, amount, mode, note) => st().paySupplier(id, amount, mode, note),
+    'suppliers.cancelPay': id => st().cancelSupplierPayment(id),
+    'suppliers.owed': () => st().suppliersOwed(),
+    'purchases.save': p => st().savePurchase(p),
+    'purchases.list': (from, to) => st().listPurchases(...range(from, to)),
+    'purchases.get': id => st().getPurchase(id),
+    'purchases.cancel': id => st().cancelPurchase(id),
+    'audit.list': q => st().auditList(q || {}),
+    'app.openUrl': url => { if (!/^https:\/\/(wa\.me|api\.whatsapp\.com)\//.test(String(url))) throw new Error('Not allowed.'); return ctx.openUrl ? ctx.openUrl(url) : false; },
     'auth.state': () => ({ linked: !!st().getSetting('link_key'), staff: st().staffList().filter(x => x.active).map(x => ({ id: x.id, name: x.name, role: x.role })), user, ownerUntil }),
     'auth.login': async (id, pin) => {
       if (!ctx.link || !ctx.link.staffLogin) throw new Error('Not available.');
-      user = await ctx.link.staffLogin(id, pin); ownerUntil = 0;
+      try { user = await ctx.link.staffLogin(id, pin); }
+      catch (e) { const x = st().staffList().find(s => s.id === id); st().who = x ? x.name : '?'; st().audit('signin.failed', x ? x.name : id, e.message); throw e; }
+      ownerUntil = 0; st().who = user.name; st().audit('signin', user.name, '');
       return user;
     },
-    'auth.logout': () => { user = null; ownerUntil = 0; return true; },
+    'auth.logout': () => { if (user) { st().who = user.name; st().audit('signout', user.name, ''); } user = null; ownerUntil = 0; return true; },
     // the owner's PIN unlocks everything for 15 minutes (laptop owner PIN, or an owner's phone-app PIN)
     'auth.owner': async (pin, ownerId) => {
       let ok = st().hasPin() && st().checkPin(pin);
@@ -36,6 +71,8 @@ function makeHandlers(ctx) {
         const owners = st().staffList().filter(x => x.role === 'owner' && x.active && (!ownerId || x.id === ownerId));
         for (const o of owners) { try { await ctx.link.staffLogin(o.id, pin); ok = true; break; } catch (e) { if (/blocked|internet/i.test(e.message) && owners.length === 1) throw e; } }
       }
+      st().who = user ? user.name : 'Counter';
+      st().audit(ok ? 'owner.unlock' : 'owner.pin.wrong', '', ok ? 'owner PIN entered (15 minutes)' : 'wrong owner PIN');
       if (ok) ownerUntil = Date.now() + 15 * 60e3;
       return ok;
     },
@@ -158,6 +195,8 @@ function makeHandlers(ctx) {
     const fn = H[m]; if (!fn) continue;
     H[m] = (...a) => { deny(k); return fn(...a); };
   }
+  // every change is written to the change log under the name of whoever is signed in
+  for (const m of Object.keys(H)) { if (m.startsWith('auth.')) continue; const fn = H[m]; H[m] = (...a) => { try { st().who = who(); } catch (e) {} return fn(...a); }; }
   return H;
 }
 

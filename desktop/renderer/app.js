@@ -252,9 +252,12 @@ $('#nav').addEventListener('click', e => { const b = e.target.closest('[data-vie
 async function show(v) {
   if (v === 'settings' && !(await requirePerm('settings', 'Settings need the owner'))) return;
   if (v === 'sales' && !(await requirePerm('sales', 'Sales are switched off for you'))) return;
+  if (v === 'customers' && !(await requirePerm('sales', 'Udhaar accounts are switched off for you'))) return;
+  if (v === 'purchases' && !(await requirePerm('edit', 'Purchases need the owner'))) return;
+  if (v === 'log' && !(await requirePerm('settings', 'The change log is for the owner'))) return;
   S.view = v;
   $$('#nav [data-view]').forEach(b => b.dataset.view === v ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
-  for (const k of ['bill', 'items', 'sales', 'settings']) $('#v-' + k).hidden = k !== v;
+  for (const k of ['bill', 'items', 'sales', 'settings', 'customers', 'purchases', 'log']) $('#v-' + k).hidden = k !== v;
   refreshView();
 }
 function refreshView() {
@@ -262,6 +265,9 @@ function refreshView() {
   if (S.view === 'items') renderItems();
   if (S.view === 'sales') renderSales();
   if (S.view === 'settings') renderSettings();
+  if (S.view === 'customers') renderCustomers();
+  if (S.view === 'purchases') renderPurchases();
+  if (S.view === 'log') renderLog();
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && modalOpen()) { e.preventDefault(); closeModal(); return; }
@@ -508,7 +514,12 @@ function renderTotals() {
     ${c.payment === 'cash' ? `<div class="totrow"><label for="recv">Cash received ₹</label><input type="number" step="any" id="recv" value="${c.received || ''}" placeholder="—"></div>
       ${change != null ? `<div class="change"><span>${change >= 0 ? 'Return to customer' : 'Still to collect'}</span><span class="num">${money(Math.abs(change))}</span></div>` : ''}` : ''}
     <div><div class="lbl" style="margin-bottom:6px">Customer <kbd>F7</kbd>${c.payment === 'udhaar' ? ' <span class="chip low">needed for udhaar</span>' : ''}</div>
-      <div class="custgrid"><input type="text" id="cName" placeholder="Name" value="${esc(c.customer)}"><input type="tel" id="cPhone" placeholder="Phone" value="${esc(c.phone)}"></div></div>
+      <div class="custgrid"><input type="text" id="cName" placeholder="Name" value="${esc(c.customer)}" list="custNames" autocomplete="off"><input type="tel" id="cPhone" placeholder="Phone" value="${esc(c.phone)}"></div>
+      <datalist id="custNames">${(S.custNames || []).map(x => `<option value="${esc(x.name)}">${esc(x.phone)}${x.balance > 0 ? ' · owes ' + money(x.balance) : ''}</option>`).join('')}</datalist>
+      <div class="muted small" id="custBal" style="margin-top:4px"></div></div>
+    ${c.payment === 'udhaar' ? `<div class="totrow"><label for="paidNow">Paid now ₹ <span class="muted small">(rest on udhaar)</span></label><input type="number" step="any" id="paidNow" value="${c.paidNow || ''}" placeholder="0"></div>
+      ${+c.paidNow > 0 ? `<div class="totrow"><span class="muted">Paid by</span><div class="seg" id="paidMode">${[['cash', 'Cash'], ['upi', 'UPI'], ['card', 'Card']].map(([k, l]) => `<button type="button" data-pm="${k}" aria-pressed="${(c.paidMode || 'cash') === k}">${l}</button>`).join('')}</div></div>
+      <div class="change"><span>On udhaar</span><span class="num">${money(Math.max(0, t.total - r2(c.paidNow)))}</span></div>` : ''}` : ''}
     <div class="actions">
       <button type="button" class="btn primary big wide" id="savePrint" ${c.lines.length ? '' : 'disabled'}>Save &amp; print <kbd>F9</kbd></button>
       <button type="button" class="btn" id="saveOnly" ${c.lines.length ? '' : 'disabled'}>Save only <kbd>F10</kbd></button>
@@ -520,8 +531,16 @@ function renderTotals() {
   $('#recv')?.addEventListener('input', e => { c.received = e.target.value; saveCart(); const ch = $('.change'); const rec2 = r2(e.target.value); if (rec2 > 0) { if (!ch) renderTotalsKeepFocus('recv'); else { const d = r2(rec2 - t.total); ch.innerHTML = `<span>${d >= 0 ? 'Return to customer' : 'Still to collect'}</span><span class="num">${money(Math.abs(d))}</span>`; } } else if (ch) ch.remove(); });
   $('#recv')?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveBill(true); } });
   el.querySelector('.paygrid').addEventListener('click', e => { const b = e.target.closest('[data-pay]'); if (!b) return; c.payment = b.dataset.pay; saveCart(); renderTotals(); if (c.payment === 'udhaar' && !c.customer) $('#cName').focus(); else focusScan(); });
-  $('#cName').addEventListener('input', e => { c.customer = e.target.value; saveCart(); });
-  $('#cPhone').addEventListener('input', e => { c.phone = e.target.value; saveCart(); });
+  $('#cName').addEventListener('input', e => {
+    c.customer = e.target.value;
+    const hit = (S.custNames || []).find(x => x.name.toLowerCase() === c.customer.trim().toLowerCase());
+    if (hit && hit.phone && !c.phone) { c.phone = hit.phone; $('#cPhone').value = hit.phone; }
+    saveCart(); showCustBal();
+  });
+  $('#cPhone').addEventListener('input', e => { c.phone = e.target.value; saveCart(); showCustBal(); });
+  $('#paidNow')?.addEventListener('change', e => { c.paidNow = Math.max(0, r2(e.target.value)); saveCart(); renderTotals(); });
+  $('#paidMode')?.addEventListener('click', e => { const b = e.target.closest('[data-pm]'); if (b) { c.paidMode = b.dataset.pm; saveCart(); renderTotals(); } });
+  showCustBal();
   for (const id of ['cName', 'cPhone']) $('#' + id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); focusScan(); } });
   $('#savePrint').addEventListener('click', () => saveBill(true));
   $('#saveOnly').addEventListener('click', () => saveBill(false));
@@ -539,11 +558,13 @@ async function saveBill(print) {
   try {
     const bill = await rpc('bills.save', {
       mode: c.mode, payment: c.payment, customer: c.customer, phone: c.phone, discount: totals().disc,
+      ...(c.payment === 'udhaar' ? { paid_now: r2(c.paidNow), paid_mode: c.paidMode || 'cash' } : {}),
       lines: c.lines.map(l => ({ code: l.code, qty: l.qty, rate: l.rate, name: l.name, unit: l.unit, gst: l.gst })),
     });
     S.lastBill = bill;
     for (const l of bill.lines) { const it = S.items.get(l.code); if (it && it.stock != null) it.stock = r2(it.stock - l.qty * (l.factor || 1)); }
     S.cart = newCart(c); S.sel = 0; saveCart(); renderQuick();
+    if (bill.payment === 'udhaar') loadCustNames();
     renderCart(); focusScan();
     if (print) {
       toast(`Bill #${bill.bill_no} saved · ${money(bill.total)} · printing…`);
@@ -1001,7 +1022,7 @@ async function renderSales(reload = true) {
     if (sales.range !== 'today' && !(await requirePerm('reports', 'Older sales need the owner'))) sales.range = 'today';
     [sales.from, sales.to] = rangeDates(sales.range);
     try {
-      [sales.sum, sales.bills, sales.items] = await Promise.all([rpc('reports.summary', sales.from, sales.to), rpc('bills.list', sales.from, sales.to), rpc('reports.items', sales.from, sales.to)]);
+      [sales.sum, sales.bills, sales.items, sales.returns] = await Promise.all([rpc('reports.summary', sales.from, sales.to), rpc('bills.list', sales.from, sales.to), rpc('reports.items', sales.from, sales.to), rpc('returns.list', sales.from, sales.to).catch(() => [])]);
     } catch (err) { toast(err.message, { err: true }); return; }
   }
   const s = sales.sum, pay = k => s.pay[k] ? s.pay[k].total : 0;
@@ -1020,10 +1041,13 @@ async function renderSales(reload = true) {
       <div class="stat"><div class="lbl">Card</div><div class="v">${money(pay('card'))}</div></div>
       <div class="stat"><div class="lbl">Udhaar</div><div class="v">${money(pay('udhaar'))}</div></div>
       <div class="stat"><div class="lbl">GST included</div><div class="v">${money(s.gst)}</div></div>
+      ${s.returns && s.returns.n ? `<div class="stat"><div class="lbl">Returns (${s.returns.n})</div><div class="v">−${money(s.returns.total)}</div></div><div class="stat"><div class="lbl">Net sales</div><div class="v">${money(s.net)}</div></div>` : ''}
+      ${s.collected && Object.keys(s.collected).length ? `<div class="stat"><div class="lbl">Udhaar collected</div><div class="v">${money(Object.values(s.collected).reduce((a, x) => a + x.total, 0))}</div></div>` : ''}
     </div>
-    <div class="toolbar"><div class="seg" id="tabSeg"><button type="button" data-t="bills" aria-pressed="${sales.tab === 'bills'}">Bills (${sales.bills.length})</button><button type="button" data-t="items" aria-pressed="${sales.tab === 'items'}">Item-wise (${sales.items.length})</button></div>
+    ${s.returns && s.returns.n ? `<p class="muted small" style="margin:0">Money given back: ${Object.entries(s.returns.by).map(([k, v]) => `${k === 'account' ? 'off udhaar accounts' : esc(PAYNAME[k] || k)} ${money(v)}`).join(' · ')}. Cash in drawer = cash sales + udhaar collected in cash − cash refunds.</p>` : ''}
+    <div class="toolbar"><div class="seg" id="tabSeg"><button type="button" data-t="bills" aria-pressed="${sales.tab === 'bills'}">Bills (${sales.bills.length})</button><button type="button" data-t="items" aria-pressed="${sales.tab === 'items'}">Item-wise (${sales.items.length})</button><button type="button" data-t="returns" aria-pressed="${sales.tab === 'returns'}">Returns (${(sales.returns || []).length})</button></div>
       <span class="muted small">${sales.from === sales.to ? sales.from.split('-').reverse().join('/') : sales.from.split('-').reverse().join('/') + ' to ' + sales.to.split('-').reverse().join('/')}</span></div>
-    <div class="tablewrap"><table class="grid" id="salesTable">${sales.tab === 'bills' ? billsTable() : itemsTable()}</table></div></div>`;
+    <div class="tablewrap"><table class="grid" id="salesTable">${sales.tab === 'bills' ? billsTable() : sales.tab === 'returns' ? returnsTable() : itemsTable()}</table></div></div>`;
   $('#rangeSeg').addEventListener('click', e => { const b = e.target.closest('[data-r]'); if (!b) return; sales.range = b.dataset.r; if (sales.range === 'custom') renderSales(false); else renderSales(); });
   $('#dGo')?.addEventListener('click', () => { sales.from = $('#dFrom').value || today(); sales.to = $('#dTo').value || sales.from; if (sales.to < sales.from) [sales.from, sales.to] = [sales.to, sales.from]; renderSales(); });
   $('#tabSeg').addEventListener('click', e => { const b = e.target.closest('[data-t]'); if (!b) return; sales.tab = b.dataset.t; renderSales(false); });
@@ -1035,9 +1059,16 @@ function billsTable() {
   return `<thead><tr><th>Bill</th><th>Time</th><th>Customer</th><th class="r">Items</th><th>Payment</th><th class="r">Discount</th><th class="r">Total</th></tr></thead>
     <tbody>${sales.bills.map(b => `<tr class="click${b.cancelled ? ' cx' : ''}" data-id="${b.id}">
       <td class="num"><b>${esc(b.bill_no)}</b></td><td>${esc(fmtTime(b.created_at))}</td>
-      <td>${esc(b.customer || 'Walk-in')}${b.mode === 'wholesale' ? ' <span class="chip acc">Wholesale</span>' : ''}${b.cancelled ? ' <span class="chip out">Cancelled</span>' : ''}</td>
+      <td>${esc(b.customer || 'Walk-in')}${b.mode === 'wholesale' ? ' <span class="chip acc">Wholesale</span>' : ''}${b.cancelled ? ' <span class="chip out">Cancelled</span>' : ''}${+b.returned ? ` <span class="chip low">returned ${money(b.returned)}</span>` : ''}</td>
       <td class="r num">${b.items_count}</td><td>${b.payment === 'udhaar' ? '<span class="chip low">Udhaar</span>' : esc(PAYNAME[b.payment] || b.payment)}</td>
       <td class="r num">${+b.discount ? money(b.discount) : ''}</td><td class="r num"><b>${money(b.total)}</b></td></tr>`).join('')}</tbody>`;
+}
+function returnsTable() {
+  const r = sales.returns || [];
+  if (!r.length) return `<tbody><tr><td><div class="empty"><b>No returns</b>Open a bill and click <b>Return items</b> when a customer brings something back.</div></td></tr></tbody>`;
+  const MODE = { cash: 'Cash refund', upi: 'UPI refund', card: 'Card refund', account: 'Off udhaar account' };
+  return `<thead><tr><th>Return</th><th>Time</th><th>Bill</th><th>Customer</th><th>Money back</th><th>By</th><th class="r">Amount</th></tr></thead>
+    <tbody>${r.map(x => `<tr class="click" data-id="${x.bill_id}"><td class="num"><b>${esc(x.return_no)}</b></td><td>${esc(fmtTime(x.created_at))}</td><td class="num">${esc(x.bill_no)}</td><td>${esc(x.customer || 'Walk-in')}</td><td>${esc(MODE[x.refund_mode] || x.refund_mode)}${x.note ? ` <span class="muted small">${esc(x.note)}</span>` : ''}</td><td>${esc(x.staff || '')}</td><td class="r num"><b>−${money(x.total)}</b></td></tr>`).join('')}</tbody>`;
 }
 function itemsTable() {
   if (!sales.items.length) return `<tbody><tr><td><div class="empty"><b>Nothing sold</b>Item-wise sales for these dates will show here.</div></td></tr></tbody>`;
@@ -1060,13 +1091,15 @@ async function openBill(id) {
         <p class="muted">${esc(fmtTime(b.created_at))} · ${esc(b.customer || 'Walk-in')}${b.phone ? ' · ' + esc(b.phone) : ''} · ${esc(PAYNAME[b.payment])}</p>
         <div class="tablewrap" style="max-height:360px"><table class="grid"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>
           <tbody>${b.lines.map(l => `<tr><td>${esc(l.name)}<div class="muted small num">${esc(l.code)}</div></td><td class="r num">${qf(l.qty)} ${esc(l.unit)}</td><td class="r num">${money(l.rate)}</td><td class="r num">${money(l.amount)}</td></tr>`).join('')}</tbody></table></div>
+        ${+b.returned ? `<p class="muted">Items worth <b class="num">${money(b.returned)}</b> were returned from this bill (see Sales → Returns).</p>` : ''}
         <p style="margin-top:10px">Subtotal <b class="num">${money(b.subtotal)}</b>${+b.discount ? ` · Discount <b class="num">${money(b.discount)}</b>` : ''} · Total <b class="num">${money(b.total)}</b></p>
         <div class="err" id="bErr"></div>
         <div class="confirmbar" id="bConfirm" hidden><span>Cancel bill #${esc(b.bill_no)}? Its items go back into stock. The bill stays in the records marked cancelled.</span><button type="button" class="btn" id="bNo">Keep bill</button><button type="button" class="btn danger" id="bYes">Cancel bill</button></div>
       </div>
       <iframe title="Receipt preview" sandbox srcdoc="${esc(html)}"></iframe>
     </div>
-    <div class="foot">${b.cancelled ? '' : '<button type="button" class="btn danger left" id="bCancel">Cancel bill</button>'}<button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="bPrint">Reprint</button></div>`, { wide: true });
+    <div class="foot">${b.cancelled || +b.returned ? '' : '<button type="button" class="btn danger left" id="bCancel">Cancel bill</button>'}${b.cancelled ? '' : '<button type="button" class="btn" id="bReturn">Return items</button>'}<button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="bPrint">Reprint</button></div>`, { wide: true });
+  $('#bReturn', m)?.addEventListener('click', async () => { if (await requirePerm('cancel', 'Returns need the owner')) { m._onClose = null; closeModal(m); openReturn(b.id); } });
   $('#bPrint', m).addEventListener('click', () => rpc('print.receipt', b.id, true).then(() => toast('Sent to printer')).catch(err => { $('#bErr', m).textContent = err.message; }));
   $('#bCancel', m)?.addEventListener('click', async () => { if (await requirePerm('cancel', 'Cancelling a bill needs the owner')) $('#bConfirm', m).hidden = false; });
   $('#bNo', m)?.addEventListener('click', () => { $('#bConfirm', m).hidden = true; });
@@ -1074,6 +1107,339 @@ async function openBill(id) {
     try { await rpc('bills.cancel', b.id); await reloadItems(); closeModal(m); toast(`Bill #${b.bill_no} cancelled, stock restored`); renderSales(); }
     catch (err) { $('#bErr', m).textContent = err.message; }
   });
+}
+
+/* ================= udhaar accounts ================= */
+const MODEN = { cash: 'Cash', upi: 'UPI', card: 'Card', bank: 'Bank' };
+async function loadCustNames() { try { S.custNames = (await rpc('customers.list')).slice(0, 800); } catch (e) { S.custNames = []; } }
+let custBalT = 0;
+function showCustBal() {
+  clearTimeout(custBalT);
+  custBalT = setTimeout(async () => {
+    const el = $('#custBal'); if (!el) return;
+    const c = S.cart; if (!c.customer.trim() && !c.phone.trim()) { el.textContent = ''; return; }
+    const x = await rpc('customers.find', c.customer, c.phone).catch(() => null);
+    if (!$('#custBal')) return;
+    $('#custBal').innerHTML = x ? (x.balance > 0 ? `<span class="chip low">Already owes ${money(x.balance)}</span>` : x.balance < 0 ? `<span class="chip ok">Advance ${money(-x.balance)}</span>` : '<span class="chip ok">No udhaar due</span>') : '';
+  }, 250);
+}
+function waReminder(c) {
+  let p = String(c.phone || '').replace(/\D/g, ''); if (p.length === 10) p = '91' + p;
+  const shop = S.settings.shop_name || 'NRRL';
+  const text = `Namaste ${c.name}, this is a reminder from ${shop}. Your pending amount is ₹${r2(c.balance)}. Please pay at your convenience. Thank you!`;
+  return 'https://wa.me/' + p + '?text=' + encodeURIComponent(text);
+}
+const cust = { q: '', filter: 'due' };
+async function renderCustomers() {
+  const el = $('#v-customers');
+  let list, tot;
+  try { [list, tot] = await Promise.all([rpc('customers.list', cust.q), rpc('customers.udhaarTotal')]); } catch (err) { toast(err.message, { err: true }); return; }
+  const shown = cust.filter === 'due' ? list.filter(c => c.balance > 0.009) : list;
+  el.innerHTML = `<div class="page">
+    <div class="ph"><h1>Udhaar accounts</h1><div class="toolbar"><button type="button" class="btn" id="cuExp">Export CSV</button><button type="button" class="btn primary" id="cuAdd">+ Add customer</button></div></div>
+    <div class="stats"><div class="stat main"><div class="lbl">Total udhaar to collect</div><div class="v">${money(tot.total)}</div></div><div class="stat"><div class="lbl">Customers who owe</div><div class="v">${tot.n}</div></div></div>
+    <div class="toolbar"><input type="search" id="cuQ" placeholder="Search name or phone" value="${esc(cust.q)}">
+      <div class="seg" id="cuSeg"><button type="button" data-f="due" aria-pressed="${cust.filter === 'due'}">Owe money</button><button type="button" data-f="all" aria-pressed="${cust.filter === 'all'}">All customers</button></div>
+      <span class="muted small">Every udhaar bill — from this laptop, other laptops and the phone app — goes to the customer’s account by phone number (or name).</span></div>
+    <div class="tablewrap"><table class="grid" id="cuTable">${!shown.length ? `<tbody><tr><td><div class="empty"><b>${cust.filter === 'due' ? 'Nobody owes money' : 'No customers yet'}</b>Customers appear here when you make an udhaar bill.</div></td></tr></tbody>` : `
+      <thead><tr><th>Customer</th><th>Phone</th><th>Last bill</th><th>Last payment</th><th class="r">Balance</th><th style="width:200px"></th></tr></thead>
+      <tbody>${shown.map(c => `<tr class="click" data-cid="${c.id}"><td><b>${esc(c.name)}</b>${c.gstin ? ` <span class="chip">${esc(c.gstin)}</span>` : ''}</td><td class="num">${esc(c.phone)}</td><td>${c.last_bill ? esc(fmtTime(c.last_bill)) : ''}</td><td>${c.last_payment ? esc(fmtTime(c.last_payment)) : ''}</td>
+        <td class="r num"><b class="${c.balance > 0 ? 'warn' : ''}">${c.balance < 0 ? 'Advance ' + money(-c.balance) : money(c.balance)}</b></td>
+        <td class="r">${c.balance > 0 ? `<button type="button" class="btn sm" data-pay="${c.id}">Receive</button>${c.phone ? ` <button type="button" class="btn sm" data-wa="${c.id}">WhatsApp</button>` : ''}` : ''}</td></tr>`).join('')}</tbody>`}</table></div></div>`;
+  $('#cuQ').addEventListener('input', e => { cust.q = e.target.value; clearTimeout(cust.t); cust.t = setTimeout(() => renderCustomers().then(() => { const q = $('#cuQ'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }), 250); });
+  $('#cuSeg').addEventListener('click', e => { const b = e.target.closest('[data-f]'); if (b) { cust.filter = b.dataset.f; renderCustomers(); } });
+  $('#cuAdd').addEventListener('click', () => editCustomer(null));
+  $('#cuExp').addEventListener('click', () => saveCsv(`nrrl-udhaar-${today()}.csv`, [['Customer', 'Phone', 'GSTIN', 'Balance', 'Last bill', 'Last payment'], ...list.map(c => [c.name, c.phone, c.gstin, c.balance, c.last_bill || '', c.last_payment || ''])]));
+  $('#cuTable').addEventListener('click', e => {
+    const p = e.target.closest('[data-pay]'), w = e.target.closest('[data-wa]'), tr = e.target.closest('tr[data-cid]');
+    if (p) return receivePayment(+p.dataset.pay);
+    if (w) { const c = list.find(x => x.id === +w.dataset.wa); return rpc('app.openUrl', waReminder(c)).catch(err => toast(err.message, { err: true })); }
+    if (tr) openCustomer(+tr.dataset.cid);
+  });
+}
+async function openCustomer(id) {
+  let c; try { c = await rpc('customers.get', id); } catch (err) { toast(err.message, { err: true }); return; }
+  const KIND = { bill: 'Udhaar bill', payment: 'Payment received', return: 'Return' };
+  const m = openModal(`<h2>${esc(c.name)} ${c.balance > 0 ? `<span class="chip low">owes ${money(c.balance)}</span>` : c.balance < 0 ? `<span class="chip ok">advance ${money(-c.balance)}</span>` : '<span class="chip ok">settled</span>'}</h2>
+    <p class="muted">${esc(c.phone || 'No phone')}${c.gstin ? ' · GSTIN ' + esc(c.gstin) : ''}${c.address ? ' · ' + esc(c.address) : ''}${+c.opening ? ' · opening balance ' + money(c.opening) : ''}</p>
+    <div class="tablewrap" style="max-height:52vh"><table class="grid"><thead><tr><th>Date</th><th>What</th><th class="r">Udhaar</th><th class="r">Paid / returned</th><th class="r">Balance</th><th></th></tr></thead>
+      <tbody>${+c.opening ? `<tr><td></td><td>Opening balance</td><td class="r num">${money(c.opening)}</td><td></td><td class="r num">${money(c.opening)}</td><td></td></tr>` : ''}
+      ${c.statement.map(r => `<tr class="${r.cancelled ? 'cx' : ''}${r.kind === 'bill' ? ' click' : ''}" ${r.kind === 'bill' ? `data-bill="${r.id}"` : ''}><td>${esc(fmtTime(r.at))}</td>
+        <td>${KIND[r.kind]} ${r.kind === 'payment' ? esc(MODEN[r.ref] || r.ref) : `<b class="num">${esc(r.ref)}</b>`}${r.note ? ` <span class="muted small">${esc(r.note)}</span>` : ''}${r.cancelled ? ' <span class="chip out">cancelled</span>' : ''}</td>
+        <td class="r num">${r.kind === 'bill' ? money(r.amount) : ''}</td><td class="r num">${r.kind !== 'bill' ? money(r.amount) : ''}</td><td class="r num">${money(r.balance)}</td>
+        <td>${r.kind === 'payment' && !r.cancelled ? `<button type="button" class="btn sm" data-undo="${r.id}" title="Cancel this payment">Undo</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">No udhaar bills or payments yet.</div></td></tr>'}</tbody></table></div>
+    <div class="err" id="coErr"></div>
+    <div class="foot"><button type="button" class="btn left" id="coEdit">Edit details</button>${c.phone && c.balance > 0 ? '<button type="button" class="btn" id="coWa">WhatsApp reminder</button>' : ''}<button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="coPay">Receive payment</button></div>`, { wide: true });
+  $('#coPay', m).addEventListener('click', () => { m._onClose = null; closeModal(m); receivePayment(c.id); });
+  $('#coEdit', m).addEventListener('click', () => { m._onClose = null; closeModal(m); editCustomer(c); });
+  $('#coWa', m)?.addEventListener('click', () => rpc('app.openUrl', waReminder(c)).catch(err => toast(err.message, { err: true })));
+  m.querySelector('tbody').addEventListener('click', async e => {
+    const u = e.target.closest('[data-undo]');
+    if (u) {
+      if (!(await requirePerm('cancel', 'Undoing a payment needs the owner'))) return;
+      try { await rpc('payments.cancel', +u.dataset.undo); m._onClose = null; closeModal(m); toast('Payment cancelled'); openCustomer(c.id); if (S.view === 'customers') renderCustomers(); } catch (err) { $('#coErr', m).textContent = err.message; }
+      return;
+    }
+    const tr = e.target.closest('tr[data-bill]'); if (tr) openBill(+tr.dataset.bill);
+  });
+}
+async function receivePayment(id) {
+  if (!(await requirePerm('bill', 'Receiving payments is switched off for you'))) return;
+  let c; try { c = await rpc('customers.get', id); } catch (err) { toast(err.message, { err: true }); return; }
+  const m = openModal(`<h2>Receive payment · ${esc(c.name)}</h2>
+    <p>Owes <b class="num">${money(Math.max(0, c.balance))}</b></p>
+    <div class="form2"><label class="f"><span>Amount received ₹</span><input type="number" step="any" id="rpAmt" value="${c.balance > 0 ? c.balance : ''}"></label>
+      <div class="f"><span class="lbl">Paid by</span><div class="seg" id="rpMode">${['cash', 'upi', 'card', 'bank'].map((k, i) => `<button type="button" data-m="${k}" aria-pressed="${i === 0}">${MODEN[k]}</button>`).join('')}</div></div>
+      <label class="f w"><span>Note (optional)</span><input type="text" id="rpNote" placeholder="e.g. paid by son"></label></div>
+    <div class="err" id="rpErr"></div>
+    <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="rpGo">Save payment</button></div>`);
+  let mode = 'cash';
+  $('#rpMode', m).addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (!b) return; mode = b.dataset.m; $$('#rpMode button', m).forEach(x => x.setAttribute('aria-pressed', x === b)); });
+  setTimeout(() => { $('#rpAmt', m).focus(); $('#rpAmt', m).select(); }, 30);
+  const go = async () => {
+    try { const r = await rpc('payments.receive', c.id, $('#rpAmt', m).value, mode, $('#rpNote', m).value); closeModal(m); toast(`Saved. ${r.customer.name} now ${r.customer.balance > 0 ? 'owes ' + money(r.customer.balance) : 'owes nothing'}.`); loadCustNames(); if (S.view === 'customers') renderCustomers(); }
+    catch (err) { $('#rpErr', m).textContent = err.message; }
+  };
+  $('#rpGo', m).addEventListener('click', go);
+  $('#rpAmt', m).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+}
+function editCustomer(c) {
+  const m = openModal(`<h2>${c ? 'Edit customer' : 'Add customer'}</h2>
+    <div class="form2"><label class="f w"><span>Name</span><input type="text" id="ecName" value="${esc(c?.name || '')}"></label>
+      <label class="f"><span>Phone (WhatsApp)</span><input type="tel" id="ecPhone" value="${esc(c?.phone || '')}"></label>
+      <label class="f"><span>GSTIN (for business customers)</span><input type="text" id="ecGst" value="${esc(c?.gstin || '')}"></label>
+      <label class="f w"><span>Address</span><input type="text" id="ecAddr" value="${esc(c?.address || '')}"></label>
+      <label class="f"><span>Opening balance ₹ (old udhaar from before)</span><input type="number" step="any" id="ecOpen" value="${c ? c.opening || '' : ''}" placeholder="0"></label>
+      <label class="f"><span>Note</span><input type="text" id="ecNote" value="${esc(c?.note || '')}"></label></div>
+    <div class="err" id="ecErr"></div>
+    <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="ecGo">Save</button></div>`);
+  setTimeout(() => $('#ecName', m).focus(), 30);
+  $('#ecGo', m).addEventListener('click', async () => {
+    const p = { name: $('#ecName', m).value, phone: $('#ecPhone', m).value, gstin: $('#ecGst', m).value, address: $('#ecAddr', m).value, opening: $('#ecOpen', m).value, note: $('#ecNote', m).value };
+    if (c && r2(p.opening) !== r2(c.opening) && !(await requirePerm('edit', 'Changing an opening balance needs the owner'))) return;
+    try { const r = c ? await rpc('customers.save', c.id, p) : await rpc('customers.add', p); closeModal(m); toast('Saved ' + r.name); loadCustNames(); if (S.view === 'customers') renderCustomers(); openCustomer(r.id); }
+    catch (err) { $('#ecErr', m).textContent = err.message; }
+  });
+}
+
+/* ================= returns ================= */
+async function openReturn(billId) {
+  let info; try { info = await rpc('returns.info', billId); } catch (err) { toast(err.message, { err: true }); return; }
+  const b = info.bill, left = info.lines.filter(l => l.left > 0);
+  if (!left.length) { toast('Everything on this bill was already returned.'); return; }
+  const m = openModal(`<h2>Return items · bill #${esc(b.bill_no)}</h2>
+    <p class="muted">${esc(fmtTime(b.created_at))} · ${esc(b.customer || 'Walk-in')} · ${esc(PAYNAME[b.payment] || b.payment)}${+b.discount ? ` · the bill’s discount is shared, so each item comes back at what the customer actually paid` : ''}</p>
+    <div class="tablewrap" style="max-height:45vh"><table class="grid"><thead><tr><th>Item</th><th class="r">Bought</th><th class="r">Already back</th><th class="r" style="width:150px">Coming back</th><th class="r">Refund</th></tr></thead>
+      <tbody id="rtBody">${info.lines.map((l, i) => `<tr><td><b>${esc(l.name)}</b><div class="muted small num">${esc(l.code)} · ${money(l.net_rate)}/${esc(l.unit)}</div></td><td class="r num">${qf(l.qty)} ${esc(l.unit)}</td><td class="r num">${l.returned ? qf(l.returned) : ''}</td>
+        <td class="r">${l.left > 0 ? `<input type="number" min="0" max="${l.left}" step="any" data-ri="${i}" value="" placeholder="0" style="width:100px;text-align:right">` : '<span class="muted small">all back</span>'}</td><td class="r num" data-ra="${i}"></td></tr>`).join('')}</tbody></table></div>
+    <div class="form2" style="margin-top:6px">
+      <div class="f w"><span class="lbl">Money back</span><div class="seg" id="rtMode">${[['cash', 'Cash'], ['upi', 'UPI'], ['card', 'Card'], ['account', 'Take off udhaar account']].map(([k, l]) => `<button type="button" data-m="${k}" aria-pressed="${k === (b.payment === 'udhaar' ? 'account' : 'cash')}" ${k === 'account' && !b.customer ? 'disabled title="This bill has no customer"' : ''}>${l}</button>`).join('')}</div></div>
+      <label class="f w"><span>Reason (optional)</span><input type="text" id="rtNote" placeholder="e.g. damaged, wrong size, not needed"></label>
+      <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="rtPrint" checked> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Print a return slip</span></label></div>
+    <p style="font-size:18px">Refund <b class="num" id="rtTot">${money(0)}</b></p>
+    <div class="err" id="rtErr"></div>
+    <div class="foot"><button type="button" class="btn left" id="rtAll">Return everything</button><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="rtGo" disabled>Save return</button></div>`, { wide: true });
+  let mode = b.payment === 'udhaar' && b.customer ? 'account' : 'cash';
+  const calc = () => {
+    let t = 0;
+    $$('[data-ri]', m).forEach(inp => { const l = info.lines[+inp.dataset.ri]; let q = Math.max(0, r2(inp.value)); if (q > l.left) { q = l.left; inp.value = q; } const a = r2(q * l.net_rate); t += a; $(`[data-ra="${inp.dataset.ri}"]`, m).textContent = q ? money(a) : ''; });
+    $('#rtTot', m).textContent = money(t); $('#rtGo', m).disabled = !(t > 0);
+  };
+  m.addEventListener('input', e => { if (e.target.dataset.ri != null) calc(); });
+  $('#rtAll', m).addEventListener('click', () => { $$('[data-ri]', m).forEach(inp => { inp.value = info.lines[+inp.dataset.ri].left; }); calc(); });
+  $('#rtMode', m).addEventListener('click', e => { const x = e.target.closest('[data-m]'); if (!x || x.disabled) return; mode = x.dataset.m; $$('#rtMode button', m).forEach(y => y.setAttribute('aria-pressed', y === x)); });
+  setTimeout(() => $('[data-ri]', m)?.focus(), 30);
+  $('#rtGo', m).addEventListener('click', async () => {
+    const lines = $$('[data-ri]', m).map(inp => ({ code: info.lines[+inp.dataset.ri].code, unit: info.lines[+inp.dataset.ri].unit, qty: r2(inp.value) })).filter(x => x.qty > 0);
+    $('#rtGo', m).disabled = true;
+    try {
+      const r = await rpc('returns.save', { bill_id: b.id, refund_mode: mode, lines, note: $('#rtNote', m).value });
+      await reloadItems(); closeModal(m);
+      toast(`Return ${r.return_no} saved · ${mode === 'account' ? money(r.total) + ' taken off the udhaar account' : 'give back ' + money(r.total)}`, { ms: 5000 });
+      if ($('#rtPrint', m).checked) rpc('print.return', r.id).catch(err => toast('Return saved, but the slip did not print: ' + err.message, { err: true }));
+      if (S.view === 'sales') renderSales();
+    } catch (err) { $('#rtErr', m).textContent = err.message; $('#rtGo', m).disabled = false; }
+  });
+}
+
+/* ================= purchases & suppliers ================= */
+const pur = { tab: 'purchases', range: 'month', from: today(), to: today() };
+async function renderPurchases() {
+  const el = $('#v-purchases');
+  [pur.from, pur.to] = (() => { const d = new Date(), t = ymd(d); if (pur.range === 'month') return [ymd(new Date(d.getFullYear(), d.getMonth(), 1)), t]; if (pur.range === 'last') return [ymd(new Date(d.getFullYear(), d.getMonth() - 1, 1)), ymd(new Date(d.getFullYear(), d.getMonth(), 0))]; const f = new Date(); f.setFullYear(f.getFullYear() - 1); return [ymd(f), t]; })();
+  let list = [], sups = [], owed;
+  try { [list, sups, owed] = await Promise.all([rpc('purchases.list', pur.from, pur.to), rpc('suppliers.list'), rpc('suppliers.owed')]); } catch (err) { toast(err.message, { err: true }); return; }
+  const live = list.filter(p => !p.cancelled);
+  el.innerHTML = `<div class="page">
+    <div class="ph"><h1>Purchases</h1><div class="toolbar"><button type="button" class="btn" id="puSup">+ Add supplier</button><button type="button" class="btn primary" id="puNew">+ New purchase</button></div></div>
+    <div class="stats"><div class="stat main"><div class="lbl">Bought (${pur.range === 'month' ? 'this month' : pur.range === 'last' ? 'last month' : 'last 12 months'})</div><div class="v">${money(live.reduce((a, p) => a + p.total, 0))}</div></div>
+      <div class="stat"><div class="lbl">You owe suppliers</div><div class="v">${money(owed.total)}</div></div><div class="stat"><div class="lbl">Suppliers owed</div><div class="v">${owed.n}</div></div></div>
+    <div class="toolbar"><div class="seg" id="puTab"><button type="button" data-t="purchases" aria-pressed="${pur.tab === 'purchases'}">Purchase bills (${list.length})</button><button type="button" data-t="suppliers" aria-pressed="${pur.tab === 'suppliers'}">Suppliers (${sups.length})</button></div>
+      ${pur.tab === 'purchases' ? `<div class="seg" id="puRange">${[['month', 'This month'], ['last', 'Last month'], ['year', '12 months']].map(([k, l]) => `<button type="button" data-r="${k}" aria-pressed="${pur.range === k}">${l}</button>`).join('')}</div>` : ''}</div>
+    <div class="tablewrap"><table class="grid" id="puTable">${pur.tab === 'purchases' ? (!list.length ? `<tbody><tr><td><div class="empty"><b>No purchases yet</b>Click <b>New purchase</b> when stock arrives from a supplier. Stock goes up and the cost price is saved.</div></td></tr></tbody>` : `
+      <thead><tr><th>No</th><th>Date</th><th>Supplier</th><th>Supplier bill</th><th class="r">Items</th><th class="r">Total</th><th class="r">Paid</th><th>By</th></tr></thead>
+      <tbody>${list.map(p => `<tr class="click${p.cancelled ? ' cx' : ''}" data-pid="${p.id}"><td class="num"><b>${esc(p.purchase_no)}</b></td><td>${esc(fmtTime(p.created_at))}</td><td>${esc(p.supplier || '—')}${p.cancelled ? ' <span class="chip out">Cancelled</span>' : ''}</td><td class="num">${esc(p.supplier_bill)}</td><td class="r num">${p.items_count}</td><td class="r num"><b>${money(p.total)}</b></td><td class="r num">${p.paid ? money(p.paid) : ''}</td><td>${esc(p.staff)}</td></tr>`).join('')}</tbody>`)
+      : (!sups.length ? `<tbody><tr><td><div class="empty"><b>No suppliers yet</b>They are added when you save a purchase, or with <b>Add supplier</b>.</div></td></tr></tbody>` : `
+      <thead><tr><th>Supplier</th><th>Phone</th><th>GSTIN</th><th>Last purchase</th><th class="r">You owe</th><th></th></tr></thead>
+      <tbody>${sups.map(x => `<tr class="click" data-sid="${x.id}"><td><b>${esc(x.name)}</b></td><td class="num">${esc(x.phone)}</td><td class="num">${esc(x.gstin)}</td><td>${x.last_purchase ? esc(fmtTime(x.last_purchase)) : ''}</td><td class="r num"><b>${x.balance < 0 ? 'Advance ' + money(-x.balance) : money(x.balance)}</b></td><td class="r">${x.balance > 0 ? `<button type="button" class="btn sm" data-spay="${x.id}">Pay</button>` : ''}</td></tr>`).join('')}</tbody>`)}</table></div></div>`;
+  $('#puNew').addEventListener('click', () => openPurchaseForm());
+  $('#puSup').addEventListener('click', () => editSupplier(null));
+  $('#puTab').addEventListener('click', e => { const b = e.target.closest('[data-t]'); if (b) { pur.tab = b.dataset.t; renderPurchases(); } });
+  $('#puRange')?.addEventListener('click', e => { const b = e.target.closest('[data-r]'); if (b) { pur.range = b.dataset.r; renderPurchases(); } });
+  $('#puTable').addEventListener('click', e => {
+    const sp = e.target.closest('[data-spay]'); if (sp) return paySupplier(+sp.dataset.spay);
+    const tr = e.target.closest('tr[data-pid]'); if (tr) return openPurchase(+tr.dataset.pid);
+    const ts = e.target.closest('tr[data-sid]'); if (ts) openSupplier(+ts.dataset.sid);
+  });
+}
+async function openPurchaseForm() {
+  let sups = []; try { sups = await rpc('suppliers.list'); } catch (e) {}
+  const lines = [];
+  const m = openModal(`<h2>New purchase</h2>
+    <div class="form2" style="grid-template-columns:2fr 1fr 1fr">
+      <label class="f"><span>Supplier</span><input type="text" id="pSup" list="supList" placeholder="Type or pick a supplier" autocomplete="off"><datalist id="supList">${sups.map(x => `<option value="${esc(x.name)}">`).join('')}</datalist></label>
+      <label class="f"><span>Supplier’s bill no.</span><input type="text" id="pBill"></label>
+      <label class="f"><span>Bill date</span><input type="date" id="pDate" value="${today()}"></label></div>
+    <div class="scanbox" style="margin-top:6px"><input type="text" id="pScan" placeholder="Scan barcode or type item name, then Enter" autocomplete="off" spellcheck="false"><div class="sugg" id="pSugg" hidden></div></div>
+    <div class="tablewrap" style="max-height:42vh;margin-top:8px"><table class="grid" id="pLines"></table></div>
+    <div class="form2" style="grid-template-columns:1fr 1fr 2fr;margin-top:6px">
+      <label class="f"><span>Paid now ₹</span><input type="number" step="any" id="pPaid" placeholder="0"></label>
+      <label class="f"><span>Paid by</span><select id="pMode">${['cash', 'upi', 'bank', 'card'].map(k => `<option value="${k}">${MODEN[k]}</option>`).join('')}</select></label>
+      <label class="f"><span>Note</span><input type="text" id="pNote"></label></div>
+    <p style="font-size:18px">Total <b class="num" id="pTot">${money(0)}</b> <span class="muted small" id="pOwe"></span></p>
+    <div class="err" id="pErr"></div>
+    <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="pGo">Save purchase · add to stock</button></div>`, { wide: true });
+  const draw = () => {
+    $('#pLines', m).innerHTML = !lines.length ? '<tbody><tr><td><div class="empty" style="padding:20px">Scan or search the items that arrived.</div></td></tr></tbody>' : `<thead><tr><th>Item</th><th class="r" style="width:110px">Qty</th><th class="r" style="width:120px">Cost / unit ₹</th><th class="r" style="width:120px">New retail ₹</th><th class="r" style="width:120px">New wholesale ₹</th><th class="r">Amount</th><th style="width:40px"></th></tr></thead>
+      <tbody>${lines.map((l, i) => `<tr><td><b>${esc(l.name)}</b><div class="muted small num">${esc(l.code)} · stock ${l.stock ?? '—'} · now ₹${l.oldRetail}${l.oldCost ? ' · last cost ₹' + l.oldCost : ''}</div></td>
+        <td class="r"><input type="number" step="any" data-k="qty" data-i="${i}" value="${l.qty}" style="width:90px;text-align:right"> <span class="muted small">${esc(l.unit)}</span></td>
+        <td class="r"><input type="number" step="any" data-k="cost" data-i="${i}" value="${l.cost}" style="width:100px;text-align:right"></td>
+        <td class="r"><input type="number" step="any" data-k="retail" data-i="${i}" value="${l.retail}" placeholder="${l.oldRetail}" style="width:100px;text-align:right"></td>
+        <td class="r"><input type="number" step="any" data-k="wholesale" data-i="${i}" value="${l.wholesale}" placeholder="${l.oldWs || ''}" style="width:100px;text-align:right"></td>
+        <td class="r num">${money(r2(l.qty * l.cost))}</td><td><button type="button" class="xbtn" data-rm="${i}" aria-label="Remove">×</button></td></tr>`).join('')}</tbody>`;
+    const t = r2(lines.reduce((a, l) => a + r2(l.qty * l.cost), 0)), paid = r2($('#pPaid', m).value);
+    $('#pTot', m).textContent = money(t); $('#pOwe', m).textContent = t ? (paid >= t ? 'fully paid' : `you will owe ${money(t - Math.max(0, paid))}`) : '';
+  };
+  const add = it => {
+    if (!it) return;
+    const l = lines.find(x => x.code === it.code);
+    if (l) l.qty = r2(l.qty + 1);
+    else lines.push({ code: it.code, name: it.name, unit: it.unit, stock: it.stock, qty: 1, cost: it.cost || '', oldCost: it.cost, oldRetail: it.retail, oldWs: it.wholesale, retail: '', wholesale: '' });
+    draw();
+  };
+  draw();
+  const scan = $('#pScan', m), sg = $('#pSugg', m);
+  let hits = [];
+  scan.addEventListener('input', () => { hits = scan.value.trim() ? searchItems(scan.value) : []; sg.hidden = !hits.length || !!findItem(scan.value); sg.innerHTML = hits.map((it, i) => `<button type="button" data-code="${esc(it.code)}" aria-selected="${i === 0}"><span class="nm">${hl(it.name, scan.value)}</span><span class="num muted small">${esc(it.code)}</span></button>`).join(''); });
+  scan.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return; e.preventDefault();
+    const v = scan.value.trim(); if (!v) return;
+    const it = findItem(v) || (hits.length ? hits[0] : null);
+    if (!it) { $('#pErr', m).textContent = `“${v}” is not in the item list. Add it in Items & stock first.`; return; }
+    $('#pErr', m).textContent = ''; add(it); scan.value = ''; sg.hidden = true; hits = [];
+  });
+  sg.addEventListener('mousedown', e => e.preventDefault());
+  sg.addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (b) { add(S.items.get(b.dataset.code)); scan.value = ''; sg.hidden = true; scan.focus(); } });
+  $('#pLines', m).addEventListener('change', e => { const i = e.target.dataset.i; if (i == null) return; lines[+i][e.target.dataset.k] = e.target.value === '' ? '' : r2(e.target.value); draw(); });
+  $('#pLines', m).addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (b) { lines.splice(+b.dataset.rm, 1); draw(); } });
+  $('#pPaid', m).addEventListener('input', draw);
+  setTimeout(() => $('#pSup', m).focus(), 30);
+  $('#pGo', m).addEventListener('click', async () => {
+    $('#pGo', m).disabled = true;
+    try {
+      const p = await rpc('purchases.save', { supplier: $('#pSup', m).value, supplier_bill: $('#pBill', m).value, bill_date: $('#pDate', m).value, paid: $('#pPaid', m).value, paid_mode: $('#pMode', m).value, note: $('#pNote', m).value,
+        lines: lines.map(l => ({ code: l.code, qty: l.qty, cost: l.cost || 0, retail: l.retail, wholesale: l.wholesale })) });
+      await reloadItems(); closeModal(m); toast(`Purchase ${p.purchase_no} saved · stock added for ${p.items_count} items`); if (S.view === 'purchases') renderPurchases();
+    } catch (err) { $('#pErr', m).textContent = err.message; $('#pGo', m).disabled = false; }
+  });
+}
+async function openPurchase(id) {
+  let p; try { p = await rpc('purchases.get', id); } catch (err) { toast(err.message, { err: true }); return; }
+  const m = openModal(`<h2>Purchase ${esc(p.purchase_no)}${p.cancelled ? ' <span class="chip out">Cancelled</span>' : ''}</h2>
+    <p class="muted">${esc(fmtTime(p.created_at))} · ${esc(p.supplier || 'No supplier')}${p.supplier_bill ? ' · bill ' + esc(p.supplier_bill) : ''}${p.bill_date ? ' · dated ' + esc(p.bill_date.split('-').reverse().join('/')) : ''} · entered by ${esc(p.staff || '—')}</p>
+    <div class="tablewrap" style="max-height:45vh"><table class="grid"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Cost</th><th class="r">Amount</th></tr></thead>
+      <tbody>${p.lines.map(l => `<tr><td>${esc(l.name)}<div class="muted small num">${esc(l.code)}</div></td><td class="r num">${qf(l.qty)} ${esc(l.unit)}</td><td class="r num">${money(l.cost)}</td><td class="r num">${money(l.amount)}</td></tr>`).join('')}</tbody></table></div>
+    <p>Total <b class="num">${money(p.total)}</b>${p.paid ? ` · paid now <b class="num">${money(p.paid)}</b> ${esc(MODEN[p.paid_mode] || '')}` : ''}${p.note ? ' · ' + esc(p.note) : ''}</p>
+    <div class="err" id="opErr"></div>
+    <div class="confirmbar" id="opConfirm" hidden><span>Cancel this purchase? Its stock is taken back out and the supplier’s balance goes down.</span><button type="button" class="btn" id="opNo">Keep</button><button type="button" class="btn danger" id="opYes">Cancel purchase</button></div>
+    <div class="foot">${p.cancelled ? '' : '<button type="button" class="btn danger left" id="opCancel">Cancel purchase</button>'}<button type="button" class="btn" data-close>Close</button></div>`, { wide: true });
+  $('#opCancel', m)?.addEventListener('click', () => { $('#opConfirm', m).hidden = false; });
+  $('#opNo', m)?.addEventListener('click', () => { $('#opConfirm', m).hidden = true; });
+  $('#opYes', m)?.addEventListener('click', async () => { try { await rpc('purchases.cancel', p.id); await reloadItems(); closeModal(m); toast('Purchase cancelled, stock taken back out'); renderPurchases(); } catch (err) { $('#opErr', m).textContent = err.message; } });
+}
+async function openSupplier(id) {
+  let s; try { s = await rpc('suppliers.get', id); } catch (err) { toast(err.message, { err: true }); return; }
+  const m = openModal(`<h2>${esc(s.name)} ${s.balance > 0 ? `<span class="chip low">you owe ${money(s.balance)}</span>` : s.balance < 0 ? `<span class="chip ok">advance ${money(-s.balance)}</span>` : '<span class="chip ok">settled</span>'}</h2>
+    <p class="muted">${esc(s.phone || 'No phone')}${s.gstin ? ' · GSTIN ' + esc(s.gstin) : ''}${+s.opening ? ' · opening balance ' + money(s.opening) : ''}</p>
+    <div class="tablewrap" style="max-height:52vh"><table class="grid"><thead><tr><th>Date</th><th>What</th><th class="r">Bought</th><th class="r">Paid</th><th class="r">You owe</th><th></th></tr></thead>
+      <tbody>${s.statement.map(r => `<tr class="${r.cancelled ? 'cx' : ''}${r.kind === 'purchase' ? ' click' : ''}" ${r.kind === 'purchase' ? `data-pid="${r.id}"` : ''}><td>${esc(fmtTime(r.at))}</td>
+        <td>${r.kind === 'purchase' ? `Purchase <b class="num">${esc(r.ref)}</b>${r.note ? ' · bill ' + esc(r.note) : ''}` : `Payment ${esc(MODEN[r.ref] || r.ref)}${r.note ? ' · ' + esc(r.note) : ''}`}${r.cancelled ? ' <span class="chip out">cancelled</span>' : ''}</td>
+        <td class="r num">${r.kind === 'purchase' ? money(r.amount) : ''}</td><td class="r num">${r.kind === 'payment' ? money(r.amount) : r.paid ? money(r.paid) : ''}</td><td class="r num">${money(r.balance)}</td>
+        <td>${r.kind === 'payment' && !r.cancelled ? `<button type="button" class="btn sm" data-undo="${r.id}">Undo</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">No purchases or payments yet.</div></td></tr>'}</tbody></table></div>
+    <div class="err" id="osErr"></div>
+    <div class="foot"><button type="button" class="btn left" id="osEdit">Edit details</button><button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="osPay">Pay supplier</button></div>`, { wide: true });
+  $('#osPay', m).addEventListener('click', () => { m._onClose = null; closeModal(m); paySupplier(s.id); });
+  $('#osEdit', m).addEventListener('click', () => { m._onClose = null; closeModal(m); editSupplier(s); });
+  m.querySelector('tbody').addEventListener('click', async e => {
+    const u = e.target.closest('[data-undo]');
+    if (u) { try { await rpc('suppliers.cancelPay', +u.dataset.undo); m._onClose = null; closeModal(m); openSupplier(s.id); renderPurchases(); } catch (err) { $('#osErr', m).textContent = err.message; } return; }
+    const tr = e.target.closest('tr[data-pid]'); if (tr) openPurchase(+tr.dataset.pid);
+  });
+}
+async function paySupplier(id) {
+  let s; try { s = await rpc('suppliers.get', id); } catch (err) { toast(err.message, { err: true }); return; }
+  const m = openModal(`<h2>Pay ${esc(s.name)}</h2><p>You owe <b class="num">${money(Math.max(0, s.balance))}</b></p>
+    <div class="form2"><label class="f"><span>Amount paid ₹</span><input type="number" step="any" id="spAmt" value="${s.balance > 0 ? s.balance : ''}"></label>
+      <label class="f"><span>Paid by</span><select id="spMode">${['cash', 'upi', 'bank', 'card'].map(k => `<option value="${k}">${MODEN[k]}</option>`).join('')}</select></label>
+      <label class="f w"><span>Note</span><input type="text" id="spNote" placeholder="e.g. cheque no., UTR"></label></div>
+    <div class="err" id="spErr"></div>
+    <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="spGo">Save payment</button></div>`);
+  setTimeout(() => { $('#spAmt', m).focus(); $('#spAmt', m).select(); }, 30);
+  $('#spGo', m).addEventListener('click', async () => { try { const r = await rpc('suppliers.pay', s.id, $('#spAmt', m).value, $('#spMode', m).value, $('#spNote', m).value); closeModal(m); toast(`Saved. You now owe ${r.name} ${money(Math.max(0, r.balance))}.`); renderPurchases(); } catch (err) { $('#spErr', m).textContent = err.message; } });
+}
+function editSupplier(s) {
+  const m = openModal(`<h2>${s ? 'Edit supplier' : 'Add supplier'}</h2>
+    <div class="form2"><label class="f w"><span>Name</span><input type="text" id="esName" value="${esc(s?.name || '')}"></label>
+      <label class="f"><span>Phone</span><input type="tel" id="esPhone" value="${esc(s?.phone || '')}"></label><label class="f"><span>GSTIN</span><input type="text" id="esGst" value="${esc(s?.gstin || '')}"></label>
+      <label class="f w"><span>Address</span><input type="text" id="esAddr" value="${esc(s?.address || '')}"></label>
+      <label class="f"><span>Opening balance ₹ (what you owed before)</span><input type="number" step="any" id="esOpen" value="${s ? s.opening || '' : ''}" placeholder="0"></label></div>
+    <div class="err" id="esErr"></div>
+    <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="esGo">Save</button></div>`);
+  setTimeout(() => $('#esName', m).focus(), 30);
+  $('#esGo', m).addEventListener('click', async () => { try { await rpc('suppliers.save', s ? s.id : null, { name: $('#esName', m).value, phone: $('#esPhone', m).value, gstin: $('#esGst', m).value, address: $('#esAddr', m).value, opening: $('#esOpen', m).value }); closeModal(m); toast('Supplier saved'); pur.tab = 'suppliers'; renderPurchases(); } catch (err) { $('#esErr', m).textContent = err.message; } });
+}
+
+/* ================= change log ================= */
+const ACT = {
+  'item.add': 'Item added', 'item.edit': 'Item changed', 'item.remove': 'Item removed', 'stock.in': 'Stock added / adjusted', 'items.import': 'Items imported',
+  'bill.price': 'Bill with changed rate / discount', 'bill.cancel': 'Bill cancelled', 'bill.return': 'Items returned',
+  'payment.receive': 'Udhaar payment received', 'payment.cancel': 'Udhaar payment undone', 'customer.add': 'Customer added', 'customer.edit': 'Customer changed',
+  'purchase.save': 'Purchase entered', 'purchase.cancel': 'Purchase cancelled', 'supplier.add': 'Supplier added', 'supplier.edit': 'Supplier changed', 'supplier.pay': 'Supplier paid', 'supplier.pay.cancel': 'Supplier payment undone',
+  settings: 'Settings changed', 'owner.pin': 'Owner PIN changed', 'owner.unlock': 'Owner PIN used', 'owner.pin.wrong': 'Wrong owner PIN', signin: 'Signed in', signout: 'Signed out', 'signin.failed': 'Sign-in failed',
+};
+const logq = { range: 'week', who: '', action: '', text: '' };
+async function renderLog() {
+  const el = $('#v-log');
+  const d = new Date(), t = ymd(d); let from = t;
+  if (logq.range === 'week') { const f = new Date(); f.setDate(f.getDate() - 6); from = ymd(f); } else if (logq.range === 'month') { const f = new Date(); f.setDate(f.getDate() - 30); from = ymd(f); } else if (logq.range === 'all') from = '';
+  let res; try { res = await rpc('audit.list', { from, to: t, who: logq.who, action: logq.action, text: logq.text }); } catch (err) { toast(err.message, { err: true }); return; }
+  const groups = [['', 'Everything'], ['item', 'Items & prices'], ['stock', 'Stock'], ['bill', 'Bills, discounts, returns'], ['payment', 'Udhaar payments'], ['purchase', 'Purchases'], ['supplier', 'Suppliers'], ['settings', 'Settings'], ['owner', 'Owner PIN'], ['sign', 'Sign-ins']];
+  el.innerHTML = `<div class="page">
+    <div class="ph"><h1>Change log</h1><div class="toolbar"><button type="button" class="btn" id="lgExp">Export CSV</button></div></div>
+    <p class="muted small" style="margin:0">Every change made on this laptop: who did it, when, and what changed. It can’t be edited or deleted.</p>
+    <div class="toolbar">
+      <div class="seg" id="lgRange">${[['today', 'Today'], ['week', '7 days'], ['month', '30 days'], ['all', 'All']].map(([k, l]) => `<button type="button" data-r="${k}" aria-pressed="${logq.range === k}">${l}</button>`).join('')}</div>
+      <select id="lgWho" style="width:auto"><option value="">Everyone</option>${res.people.map(p => `<option${p === logq.who ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      <select id="lgAct" style="width:auto">${groups.map(([k, l]) => `<option value="${k}"${k === logq.action ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <input type="search" id="lgText" placeholder="Search item, bill no, customer…" value="${esc(logq.text)}"></div>
+    <div class="tablewrap"><table class="grid">${!res.rows.length ? '<tbody><tr><td><div class="empty"><b>Nothing here</b>Changes will be listed as they happen.</div></td></tr></tbody>' : `
+      <thead><tr><th style="width:130px">When</th><th style="width:140px">Who</th><th style="width:220px">What</th><th>Details</th></tr></thead>
+      <tbody>${res.rows.map(r => `<tr class="${/cancel|remove|wrong|failed/.test(r.action) ? 'warnrow' : ''}"><td>${esc(fmtTime(r.at))}</td><td><b>${esc(r.who)}</b></td><td>${esc(ACT[r.action] || r.action)}${r.ref ? ` <span class="muted">· ${esc(r.ref)}</span>` : ''}</td><td class="small">${esc(r.detail)}</td></tr>`).join('')}</tbody>`}</table></div></div>`;
+  $('#lgRange').addEventListener('click', e => { const b = e.target.closest('[data-r]'); if (b) { logq.range = b.dataset.r; renderLog(); } });
+  $('#lgWho').addEventListener('change', e => { logq.who = e.target.value; renderLog(); });
+  $('#lgAct').addEventListener('change', e => { logq.action = e.target.value; renderLog(); });
+  $('#lgText').addEventListener('change', e => { logq.text = e.target.value.trim(); renderLog(); });
+  $('#lgExp').addEventListener('click', () => saveCsv(`nrrl-change-log-${today()}.csv`, [['When', 'Who', 'What', 'Ref', 'Details'], ...res.rows.map(r => [r.at, r.who, ACT[r.action] || r.action, r.ref, r.detail])]));
 }
 
 /* ================= settings ================= */
@@ -1345,6 +1711,7 @@ async function init() {
   // keep cart lines in sync with any price changes since last time
   for (const l of S.cart.lines) { const it = S.items.get(l.code); if (it) { l.name = it.name; l.unit = unitFor(it); l.gst = it.gst; if (l.listRate !== false) l.rate = priceFor(it); } }
   await loadAuth();
+  loadCustNames();
   buildBill(); renderLock(); renderBackupState();
   if (needSignIn()) showSignIn();
   setInterval(renderBackupState, 5 * 60e3);

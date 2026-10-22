@@ -2,6 +2,7 @@
 'use strict';
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
+const { migrateLedger, ledgerMethods } = require('./ledger');
 
 const r2 = n => Math.round((+n || 0) * 100) / 100;
 const p2 = n => String(n).padStart(2, '0');
@@ -126,6 +127,7 @@ class Store {
     const ins = this.db.prepare('insert or ignore into settings(key,value) values(?,?)');
     for (const [k, v] of Object.entries(DEFAULTS)) ins.run(k, v);
     if (!this.getSetting('install_id')) this.setSetting('install_id', crypto.randomBytes(8).toString('hex'));
+    migrateLedger(this);
   }
 
   /* ---------- settings ---------- */
@@ -139,6 +141,7 @@ class Store {
     return o;
   }
   saveSettings(obj) {
+    const before = {}; for (const k of Object.keys(obj || {})) before[k] = this.getSetting(k);
     this.db.transaction(() => {
       for (const [k, v] of Object.entries(obj || {})) {
         if (!EDITABLE.has(k)) continue;
@@ -153,6 +156,8 @@ class Store {
       }
       this._syncLabelSize();
     })();
+    const changed = Object.keys(obj || {}).filter(k => EDITABLE.has(k) && !['label_price', 'label_wcode', 'label_show_logo', 'label_rate_size'].includes(k) && String(before[k] ?? '') !== String(this.getSetting(k) ?? ''));
+    if (changed.length) this.audit('settings', '', changed.map(k => `${k}: ${String(before[k] ?? '').slice(0, 40)} → ${String(this.getSetting(k)).slice(0, 40)}`).join('; '));
     return this.getSettings();
   }
   /* ---------- label sizes: several rolls saved, one in use ---------- */
@@ -246,6 +251,7 @@ class Store {
     if (this.hasPin() && !this.checkPin(oldPin)) throw new Error('Current PIN is wrong.');
     newPin = String(newPin || '');
     if (newPin && !/^\d{4,8}$/.test(newPin)) throw new Error('PIN must be 4 to 8 digits.');
+    this.audit('owner.pin', '', newPin ? 'laptop owner PIN set/changed' : 'laptop owner PIN removed');
     if (!newPin) { this.setSetting('owner_pin', ''); return false; }
     const salt = crypto.randomBytes(16).toString('hex');
     this.setSetting('owner_pin', salt + ':' + crypto.scryptSync(newPin, salt, 32).toString('hex'));
@@ -283,6 +289,7 @@ class Store {
     const row = this._row(it);
     oldCode = oldCode == null || oldCode === '' ? null : String(oldCode);
     const ex = this.getItem(row.code);
+    const prev = oldCode ? this.getItem(oldCode) : (ex && ex.active ? ex : null);
     if (ex && ex.active && row.code !== oldCode) throw new Error(`Code ${row.code} is already used by “${ex.name}”.`);
     this.db.transaction(() => {
       let prevStock = null;
@@ -306,9 +313,17 @@ class Store {
       const diff = r2((row.stock ?? 0) - (prevStock ?? 0));
       if (row.stock != null && diff !== 0) this._move(row.code, diff, isNew ? 'opening' : 'adjust', 'edit');
     })();
+    if (!prev) this.audit('item.add', row.name, `${row.code} · retail ${row.retail}${row.wholesale ? ' · wholesale ' + row.wholesale : ''}${row.stock != null ? ' · stock ' + row.stock : ''}`);
+    else {
+      const ch = [];
+      if (prev.code !== row.code) ch.push(`code ${prev.code} → ${row.code}`);
+      for (const k of ['name', 'retail', 'wholesale', 'cost', 'stock', 'unit', 'gst', 'wholesale_unit', 'wholesale_qty']) if (String(prev[k] ?? '') !== String(row[k] ?? '')) ch.push(`${k} ${prev[k] ?? '—'} → ${row[k] ?? '—'}`);
+      if (ch.length) this.audit('item.edit', row.name, ch.join('; '));
+    }
     return this.getItem(row.code);
   }
   removeItem(code) {
+    const it = this.getItem(code); if (it) this.audit('item.remove', it.name, it.code);
     this.db.prepare('update items set active=0, updated_at=? where code=?').run(nowLocal(), String(code));
     if (this.getItem(code)) this.linkPush('item', { ...this._itemPayload(String(code), false), removed: true });
     return true;
@@ -322,6 +337,7 @@ class Store {
       this.db.prepare('update items set stock=coalesce(stock,0)+?, updated_at=? where code=?').run(qty, nowLocal(), it.code);
       this._move(it.code, qty, qty > 0 ? 'purchase' : 'adjust', note || '');
     })();
+    this.audit('stock.in', it.name, `${qty > 0 ? '+' : ''}${qty} ${it.unit} (was ${it.stock ?? '—'})${note ? ' · ' + note : ''}`);
     return this.getItem(code);
   }
   importItems(rows) {
@@ -351,6 +367,7 @@ class Store {
         imported++;
       });
     })();
+    if (imported) this.audit('items.import', '', `${imported} items imported${skipped ? `, ${skipped} skipped` : ''}`);
     return { imported, skipped, errors };
   }
   _move(code, qty, kind, ref) {
@@ -403,6 +420,15 @@ class Store {
       const info = this.db.prepare(`insert into bills(bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst,staff)
         values(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(billNo, now, mode, payment, String(p.customer || '').trim(), String(p.phone || '').trim(), out.length, r2(qty), sub, disc, total, gst, String(p.staff || '').slice(0, 60));
       const bid = info.lastInsertRowid;
+      if (payment === 'udhaar') {
+        const c = this.ensureCustomer(p.customer, p.phone);
+        this.db.prepare('update bills set customer_id=? where id=?').run(c.id, bid);
+        const paidNow = Math.min(r2(p.paid_now), total);
+        if (paidNow > 0) this.db.prepare('insert into payments(customer_id,amount,mode,note,bill_id,created_at,staff) values(?,?,?,?,?,?,?)')
+          .run(c.id, paidNow, ['cash', 'upi', 'card'].includes(p.paid_mode) ? p.paid_mode : 'cash', 'paid with bill ' + billNo, bid, now, String(p.staff || '').slice(0, 60));
+      }
+      const changedRates = out.filter(l => { const it = this.getItem(l.code); if (!it) return false; const ws = mode === 'wholesale' && it.wholesale > 0; return r2(ws ? it.wholesale : it.retail) !== l.rate; });
+      if (changedRates.length || disc > 0) this.audit('bill.price', billNo, [...changedRates.map(l => { const it = this.getItem(l.code); return `${l.name} at ${l.rate} (list ${mode === 'wholesale' && it.wholesale > 0 ? it.wholesale : it.retail})`; }), disc > 0 ? `discount ${disc}` : ''].filter(Boolean).join('; ') + ` · total ${total}`);
       const insL = this.db.prepare('insert into bill_lines(bill_id,code,name,unit,hsn,gst,qty,rate,amount,factor) values(?,?,?,?,?,?,?,?,?,?)');
       const dec = this.db.prepare('update items set stock=round(stock-?,2) where code=? and stock is not null');
       for (const l of out) {
@@ -430,13 +456,14 @@ class Store {
   }
   listBills(from, to) {
     const [a, b] = this._range(from, to);
-    return this.db.prepare(`select id,bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst,cancelled
+    return this.db.prepare(`select id,bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst,cancelled,returned,staff
       from bills where created_at>=? and created_at<? order by id desc limit 5000`).all(a, b);
   }
   cancelBill(id) {
     const b = this.getBill(id);
     if (!b) throw new Error('Bill not found.');
     if (b.cancelled) return b;
+    if (b.returned > 0) throw new Error('Some items from this bill were already returned. Return the rest instead of cancelling.');
     this.db.transaction(() => {
       const inc = this.db.prepare('update items set stock=round(stock+?,2) where code=? and stock is not null');
       for (const l of b.lines) {
@@ -445,6 +472,7 @@ class Store {
         if (it && it.stock != null) { inc.run(sq, l.code); this._move(l.code, sq, 'cancel', b.bill_no); }
       }
       this.db.prepare('update bills set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id);
+      this.audit('bill.cancel', b.bill_no, `₹${b.total} ${b.payment}${b.customer ? ' · ' + b.customer : ''}`);
     })();
     this.enqueue('cancel', { bill_no: b.bill_no });
     if (!/^(M\d+|L\d+-.*)$/.test(b.bill_no) || (this.getSetting('bill_prefix') && b.bill_no.startsWith(this.getSetting('bill_prefix')))) this.linkPush('cancel', { bill_no: b.bill_no });
@@ -457,7 +485,13 @@ class Store {
     const pay = {};
     for (const r of this.db.prepare(`select payment, count(*) n, sum(total) total from bills where cancelled=0 and created_at>=? and created_at<? group by payment`).all(a, b)) pay[r.payment] = { n: r.n, total: r2(r.total) };
     const cancelled = this.db.prepare('select count(*) n from bills where cancelled=1 and created_at>=? and created_at<?').get(a, b).n;
-    return { bills: t.bills, total: r2(t.total), gst: r2(t.gst), discount: r2(t.discount), qty: r2(t.qty), pay, cancelled };
+    const ret = this.db.prepare('select count(*) n, coalesce(sum(total),0) total, coalesce(sum(gst),0) gst from returns where created_at>=? and created_at<?').get(a, b);
+    const refunds = {};
+    for (const r of this.db.prepare('select refund_mode, sum(total) total from returns where created_at>=? and created_at<? group by refund_mode').all(a, b)) refunds[r.refund_mode] = r2(r.total);
+    const collected = {};
+    for (const r of this.paymentsBetween(a, b)) collected[r.mode] = { n: r.n, total: r2(r.total) };
+    return { bills: t.bills, total: r2(t.total), gst: r2(t.gst), discount: r2(t.discount), qty: r2(t.qty), pay, cancelled,
+      returns: { n: ret.n, total: r2(ret.total), gst: r2(ret.gst), by: refunds }, net: r2(t.total - ret.total), collected };
   }
   itemSales(from, to) {
     const [a, b] = this._range(from, to);
@@ -534,9 +568,10 @@ class Store {
         if (has.get(no)) { if (b.deleted) this.db.prepare('update bills set cancelled=1 where bill_no=? and cancelled=0').run(no); continue; }
         const lines = Array.isArray(b.lines) ? b.lines : [];
         const qty = r2(lines.reduce((a, l) => a + (+l.qty || 0), 0));
-        const info = this.db.prepare(`insert into bills(bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst,cancelled)
-          values(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(no, String(b.created_at).slice(0, 19), b.mode || 'retail', b.payment || 'cash', b.customer || '', b.phone || '',
-          lines.length, qty, r2(b.subtotal), r2(b.discount), r2(b.total), r2(b.gst), b.deleted ? 1 : 0);
+        const cust = b.payment === 'udhaar' ? this.ensureCustomer(b.customer, b.phone) : null;
+        const info = this.db.prepare(`insert into bills(bill_no,created_at,mode,payment,customer,phone,items_count,qty,subtotal,discount,total,gst,cancelled,staff,customer_id)
+          values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(no, String(b.created_at).slice(0, 19), b.mode || 'retail', b.payment || 'cash', b.customer || '', b.phone || '',
+          lines.length, qty, r2(b.subtotal), r2(b.discount), r2(b.total), r2(b.gst), b.deleted ? 1 : 0, String(b.staff_name || '').slice(0, 60), cust ? cust.id : null);
         const ins = this.db.prepare('insert into bill_lines(bill_id,code,name,unit,hsn,gst,qty,rate,amount,factor) values(?,?,?,?,?,?,?,?,?,?)');
         for (const l of lines) ins.run(info.lastInsertRowid, String(l.code), String(l.name || l.code), l.unit || 'pcs', l.hsn || '', +l.gst || 0, +l.qty || 0, r2(l.price), r2(l.amount), +l.factor || 1);
         if (!fromPc) this.enqueue('bill', this.getBill(info.lastInsertRowid)); // a laptop sends its own bills to the sheet
@@ -550,4 +585,5 @@ class Store {
   }
 }
 
+Object.assign(Store.prototype, ledgerMethods);
 module.exports = { Store, nowLocal, r2 };
