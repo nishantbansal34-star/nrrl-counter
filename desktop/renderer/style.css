@@ -222,3 +222,13 @@ table.grid tr.cx td { color: var(--muted); text-decoration: line-through; }
 #pSugg { top: 50px; }
 table.grid tr.warnrow td:nth-child(3) { color: var(--bad); font-weight: 600; }
 .preview iframe.a4 { width: 560px; }
+.qkeys { display: flex; gap: 4px; justify-content: flex-end; margin-top: 4px; flex-wrap: wrap; }
+.qkeys button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 700; color: var(--fg); }
+.qkeys button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.qkeys kbd { margin-left: 4px; font-size: 10px; }
+.heldbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 6px 10px; background: color-mix(in srgb, var(--marigold) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--marigold) 45%, transparent); border-radius: 10px; }
+.heldbar .lbl2 { font-size: 12px; font-weight: 700; color: var(--marigold-ink); }
+:root[data-theme="dark"] .heldbar .lbl2 { color: var(--marigold); }
+.heldchip { display: inline-flex; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 99px; padding-left: 4px; }
+.heldchip > button:first-child { border: 0; background: none; padding: 4px 6px 4px 8px; font-weight: 600; font-size: 13px; }
+.heldchip .xbtn { width: 26px; height: 26px; font-size: 16px; }

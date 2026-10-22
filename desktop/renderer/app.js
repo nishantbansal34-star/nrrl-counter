@@ -287,6 +287,8 @@ document.addEventListener('keydown', e => {
   else if (k === 'F10') { e.preventDefault(); saveBill(false); }
   else if (e.ctrlKey && k.toLowerCase() === 'p') { e.preventDefault(); reprintLast(); }
   else if (e.altKey && k.toLowerCase() === 'w') { e.preventDefault(); if (S.lastBill) sendWhatsApp(S.lastBill); }
+  else if (e.altKey && ['d', 't', 'k'].includes(k.toLowerCase())) { e.preventDefault(); if (!quickQty(S.sel, { d: 'doz', t: 'ten', k: 'pack' }[k.toLowerCase()])) beep(false); focusScan(); }
+  else if (e.ctrlKey && k.toLowerCase() === 'h') { e.preventDefault(); holdBill(); }
   else if (e.ctrlKey && /^[1-9]$/.test(k)) { const it = topItems(9)[+k - 1]; if (it) { e.preventDefault(); addItem(it); focusScan(); } }
   else if (e.altKey && /^[1-4]$/.test(k)) { e.preventDefault(); S.cart.payment = PAY[+k - 1][0]; saveCart(); renderTotals(); }
   else if ((document.activeElement === document.body || /^(BUTTON|A)$/.test(document.activeElement?.tagName)) && k.length === 1 && !e.ctrlKey && !e.altKey) { focusScan(); }
@@ -326,7 +328,8 @@ function buildBill() {
         </div>
         <div class="seg" role="group" aria-label="Price list" id="modeSeg"><button type="button" data-mode="retail">Retail</button><button type="button" data-mode="wholesale">Wholesale</button></div>
       </div>
-      <div class="hintline"><span><kbd>5*</kbd> before a scan = qty 5</span><span><kbd>+</kbd><kbd>−</kbd> change qty</span><span><kbd>Del</kbd> remove line</span><span><kbd>↑</kbd><kbd>↓</kbd> pick line</span><span><kbd>F4</kbd> type qty</span><span><kbd>F6</kbd> retail/wholesale</span><span><kbd>Ctrl+P</kbd> reprint last</span></div>
+      <div class="hintline"><span><kbd>5*</kbd> before a scan = qty 5</span><span><kbd>+</kbd><kbd>−</kbd> change qty</span><span><kbd>Del</kbd> remove line</span><span><kbd>↑</kbd><kbd>↓</kbd> pick line</span><span><kbd>F4</kbd> type qty</span><span><kbd>F6</kbd> retail/wholesale</span><span><kbd>Alt+D</kbd> dozen <kbd>Alt+T</kbd> ten <kbd>Alt+K</kbd> pack</span><span><kbd>Ctrl+H</kbd> hold bill</span><span><kbd>Ctrl+P</kbd> reprint last</span></div>
+      <div class="heldbar" id="heldBar" hidden></div>
       <div class="quick" id="quick" hidden></div>
       <div class="lines" id="linesWrap"><table class="grid" id="lines"></table></div>
     </div>
@@ -341,6 +344,13 @@ function buildBill() {
   $('#modeSeg').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
   $('#lines').addEventListener('click', onLineClick);
   $('#lines').addEventListener('change', onLineChange);
+  $('#heldBar').addEventListener('click', e => {
+    const o = e.target.closest('[data-hold]'), x = e.target.closest('[data-hdel]');
+    if (o) resumeHeld(+o.dataset.hold);
+    if (x) { const id = +x.dataset.hdel, h = S.held.find(y => y.id === id); if (h && Date.now() - (S.hdelArm || 0) > 2500) { S.hdelArm = Date.now(); toast('Click × again to delete this held bill'); return; } S.held = S.held.filter(y => y.id !== id); saveHeld(); renderHeld(); }
+    focusScan();
+  });
+  renderHeld();
   $('#quick').addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (b) { addItem(S.items.get(b.dataset.code)); focusScan(); } });
   renderQuick();
   $('#lines').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); focusScan(); } });
@@ -436,6 +446,23 @@ function selectLine(i) {
   $$('#lines tbody tr').forEach((tr, j) => tr.classList.toggle('sel', j === S.sel));
   $$('#lines tbody tr')[S.sel]?.scrollIntoView({ block: 'nearest' });
 }
+/* One key for common pack sizes: dozen (Alt+D), ten (Alt+T), and the item's own pack (Alt+K) —
+   e.g. a balloon packet of 50 set as its wholesale unit. First press sets it, the next press adds another. */
+function quickKeys(l) {
+  const it = S.items.get(l.code), out = [];
+  const u = String(l.unit || '').toLowerCase();
+  if (!/^doz/.test(u)) out.push({ k: 'doz', n: 12, label: 'Dozen', key: 'Alt+D', title: '12 ' + l.unit });
+  out.push({ k: 'ten', n: 10, label: '10', key: 'Alt+T', title: '10 ' + l.unit });
+  if (it && it.wholesale_unit && it.wholesale_unit !== l.unit && +it.wholesale_qty > 1) out.push({ k: 'pack', n: +it.wholesale_qty, label: `1 ${it.wholesale_unit} (${+it.wholesale_qty})`, key: 'Alt+K', title: `${+it.wholesale_qty} ${l.unit} = 1 ${it.wholesale_unit}` });
+  return out;
+}
+function quickQty(i, kind) {
+  const l = S.cart.lines[i]; if (!l) return false;
+  const k = quickKeys(l).find(x => x.k === kind); if (!k) return false;
+  l.qty = r2(l.qty === 1 ? k.n : l.qty + k.n);
+  saveCart(); renderCart(i); beep(true);
+  return true;
+}
 function bumpQty(i, d) {
   const l = S.cart.lines[i]; if (!l) return;
   l.qty = r2(l.qty + d);
@@ -448,6 +475,33 @@ function removeLine(i) {
   S.sel = Math.min(S.sel, S.cart.lines.length - 1);
   saveCart(); renderCart();
 }
+/* Hold a bill: park it while the customer keeps shopping, bill the next person, pick it up again later. */
+S.held = LS.get('held', []);
+const saveHeld = () => LS.set('held', S.held);
+function holdLabel(c) { const t = c.lines.reduce((a, l) => a + l.rate * l.qty, 0); return `${c.customer || 'Customer'} · ${c.lines.length} item${c.lines.length === 1 ? '' : 's'} · ${money(t)}`; }
+function holdBill(quiet) {
+  if (!S.cart.lines.length) { if (!quiet) toast('Nothing to hold — the bill is empty.'); return false; }
+  const d = new Date();
+  S.held.push({ id: Date.now(), at: `${p2(d.getHours())}:${p2(d.getMinutes())}`, cart: S.cart });
+  saveHeld();
+  if (!quiet) toast(`Bill on hold: ${holdLabel(S.cart)}`);
+  S.cart = newCart(S.cart); S.sel = 0; saveCart(); renderCart(); renderHeld(); focusScan();
+  return true;
+}
+function resumeHeld(id) {
+  const i = S.held.findIndex(h => h.id === id); if (i < 0) return;
+  const h = S.held.splice(i, 1)[0];
+  if (S.cart.lines.length) { const d = new Date(); S.held.push({ id: Date.now(), at: `${p2(d.getHours())}:${p2(d.getMinutes())}`, cart: S.cart }); toast('Current bill put on hold'); }
+  S.cart = h.cart; S.sel = 0;
+  // prices may have changed while it waited
+  for (const l of S.cart.lines) { const it = S.items.get(l.code); if (it && l.listRate !== false) l.rate = priceFor(it); }
+  saveHeld(); saveCart(); renderCart(); renderHeld(); focusScan();
+}
+function renderHeld() {
+  const el = $('#heldBar'); if (!el) return;
+  el.hidden = !S.held.length;
+  el.innerHTML = `<span class="lbl2">On hold:</span>` + S.held.map(h => `<span class="heldchip"><button type="button" data-hold="${h.id}" title="Open this bill">${esc(holdLabel(h.cart))} <span class="muted small">${esc(h.at)}</span></button><button type="button" class="xbtn" data-hdel="${h.id}" aria-label="Delete held bill" title="Delete this held bill">×</button></span>`).join('');
+}
 let clearArm = 0;
 function clearBill() {
   if (!S.cart.lines.length) return;
@@ -459,7 +513,8 @@ function onLineClick(e) {
   const tr = e.target.closest('tr[data-i]');
   if (tr && !b) { selectLine(+tr.dataset.i); return; }
   if (!b) return;
-  if (b.dataset.inc != null) bumpQty(+b.dataset.inc, 1);
+  if (b.dataset.qk) quickQty(+b.dataset.qi, b.dataset.qk);
+  else if (b.dataset.inc != null) bumpQty(+b.dataset.inc, 1);
   else if (b.dataset.dec != null) bumpQty(+b.dataset.dec, -1);
   else if (b.dataset.rm != null) removeLine(+b.dataset.rm);
   focusScan();
@@ -491,7 +546,8 @@ function renderCart(popIdx) {
     <tbody>${c.lines.map((l, i) => `<tr data-i="${i}" class="${i === S.sel ? 'sel' : ''}${i === popIdx ? ' pop' : ''}">
       <td class="muted num">${i + 1}</td>
       <td><div class="nm">${esc(l.name)}</div><div class="code">${esc(l.code)}</div></td>
-      <td class="r"><span class="qtyctl"><button type="button" data-dec="${i}" tabindex="-1">−</button><input type="number" step="any" data-q="${i}" value="${l.qty}" aria-label="Quantity"><button type="button" data-inc="${i}" tabindex="-1">+</button></span> <span class="muted small">${esc(l.unit)}</span></td>
+      <td class="r"><span class="qtyctl"><button type="button" data-dec="${i}" tabindex="-1">−</button><input type="number" step="any" data-q="${i}" value="${l.qty}" aria-label="Quantity"><button type="button" data-inc="${i}" tabindex="-1">+</button></span> <span class="muted small">${esc(l.unit)}</span>
+        ${i === S.sel ? `<div class="qkeys">${quickKeys(l).map(k => `<button type="button" data-qk="${k.k}" data-qi="${i}" tabindex="-1" title="${esc(k.title)}">${esc(k.label)}<kbd>${k.key}</kbd></button>`).join('')}</div>` : ''}</td>
       <td class="r">${canRate ? `<input class="rate" type="number" step="any" data-p="${i}" value="${l.rate}" aria-label="Rate">` : `<span class="num">${money(l.rate)}</span>`}</td>
       <td class="r num"><b>${money(l.rate * l.qty)}</b></td>
       <td><button type="button" class="xbtn" data-rm="${i}" tabindex="-1" aria-label="Remove">×</button></td></tr>`).join('')}</tbody>`;
@@ -524,6 +580,7 @@ function renderTotals() {
     <div class="actions">
       <button type="button" class="btn primary big wide" id="savePrint" ${c.lines.length ? '' : 'disabled'}>Save &amp; print <kbd>F9</kbd></button>
       <button type="button" class="btn" id="saveOnly" ${c.lines.length ? '' : 'disabled'}>Save only <kbd>F10</kbd></button>
+      <button type="button" class="btn" id="holdB" ${c.lines.length ? '' : 'disabled'}>Hold <kbd>Ctrl+H</kbd></button>
       <button type="button" class="btn" id="clearB" ${c.lines.length ? '' : 'disabled'}>Clear <kbd>Esc</kbd></button>
     </div>
     ${lb ? `<div class="lastbill"><span>Last bill <b>#${esc(lb.bill_no)}</b> · <span class="num">${money(lb.total)}</span></span><span style="display:flex;gap:6px"><button type="button" class="btn" id="waLast" title="Send the bill as a PDF on WhatsApp">WhatsApp <kbd>Alt+W</kbd></button><button type="button" class="btn" id="reprint">Reprint <kbd>Ctrl+P</kbd></button></span></div>` : ''}`;
@@ -545,6 +602,7 @@ function renderTotals() {
   for (const id of ['cName', 'cPhone']) $('#' + id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); focusScan(); } });
   $('#savePrint').addEventListener('click', () => saveBill(true));
   $('#saveOnly').addEventListener('click', () => saveBill(false));
+  $('#holdB').addEventListener('click', () => holdBill());
   $('#clearB').addEventListener('click', () => { clearArm = Date.now(); clearBill(); });
   $('#reprint')?.addEventListener('click', reprintLast);
   $('#waLast')?.addEventListener('click', () => S.lastBill && sendWhatsApp(S.lastBill));
@@ -1340,6 +1398,7 @@ async function openPurchaseForm() {
       <label class="f"><span>Paid now ₹</span><input type="number" step="any" id="pPaid" placeholder="0"></label>
       <label class="f"><span>Paid by</span><select id="pMode">${['cash', 'upi', 'bank', 'card'].map(k => `<option value="${k}">${MODEN[k]}</option>`).join('')}</select></label>
       <label class="f"><span>Note</span><input type="text" id="pNote"></label></div>
+    <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="pLabels" ${LS.get('purLabels', true) ? 'checked' : ''}> Print barcode labels for these items after saving (one per piece received)</label>
     <p style="font-size:18px">Total <b class="num" id="pTot">${money(0)}</b> <span class="muted small" id="pOwe"></span></p>
     <div class="err" id="pErr"></div>
     <div class="foot"><button type="button" class="btn" data-close>Cancel</button><button type="button" class="btn accent" id="pGo">Save purchase · add to stock</button></div>`, { wide: true });
@@ -1383,9 +1442,25 @@ async function openPurchaseForm() {
     try {
       const p = await rpc('purchases.save', { supplier: $('#pSup', m).value, supplier_bill: $('#pBill', m).value, bill_date: $('#pDate', m).value, paid: $('#pPaid', m).value, paid_mode: $('#pMode', m).value, note: $('#pNote', m).value,
         lines: lines.map(l => ({ code: l.code, qty: l.qty, cost: l.cost || 0, retail: l.retail, wholesale: l.wholesale })) });
+      const wantLabels = $('#pLabels', m).checked; LS.set('purLabels', wantLabels);
       await reloadItems(); closeModal(m); toast(`Purchase ${p.purchase_no} saved · stock added for ${p.items_count} items`); if (S.view === 'purchases') renderPurchases();
+      if (wantLabels) labelsForPurchase(p);
     } catch (err) { $('#pErr', m).textContent = err.message; $('#pGo', m).disabled = false; }
   });
+}
+/* Labels straight from a purchase: every item that arrived goes on the label list, one label per piece. */
+function labelsForPurchase(p) {
+  let n = 0;
+  for (const l of p.lines) {
+    const count = Math.max(0, Math.ceil(l.qty)); if (!count || !S.items.has(l.code)) continue;
+    const q = S.labelQ.find(x => x.code === l.code);
+    if (q) q.count += count; else S.labelQ.push({ code: l.code, count });
+    n += count;
+  }
+  saveQ();
+  if (!n) { toast('Nothing to print labels for.'); return; }
+  toast(`${n} labels added to the label list`);
+  openLabelList();
 }
 async function openPurchase(id) {
   let p; try { p = await rpc('purchases.get', id); } catch (err) { toast(err.message, { err: true }); return; }
@@ -1396,7 +1471,8 @@ async function openPurchase(id) {
     <p>Total <b class="num">${money(p.total)}</b>${p.paid ? ` · paid now <b class="num">${money(p.paid)}</b> ${esc(MODEN[p.paid_mode] || '')}` : ''}${p.note ? ' · ' + esc(p.note) : ''}</p>
     <div class="err" id="opErr"></div>
     <div class="confirmbar" id="opConfirm" hidden><span>Cancel this purchase? Its stock is taken back out and the supplier’s balance goes down.</span><button type="button" class="btn" id="opNo">Keep</button><button type="button" class="btn danger" id="opYes">Cancel purchase</button></div>
-    <div class="foot">${p.cancelled ? '' : '<button type="button" class="btn danger left" id="opCancel">Cancel purchase</button>'}<button type="button" class="btn" data-close>Close</button></div>`, { wide: true });
+    <div class="foot">${p.cancelled ? '' : '<button type="button" class="btn danger left" id="opCancel">Cancel purchase</button>'}<button type="button" class="btn" data-close>Close</button>${p.cancelled ? '' : '<button type="button" class="btn accent" id="opLabels">Print labels for these items</button>'}</div>`, { wide: true });
+  $('#opLabels', m)?.addEventListener('click', () => { m._onClose = null; closeModal(m); labelsForPurchase(p); });
   $('#opCancel', m)?.addEventListener('click', () => { $('#opConfirm', m).hidden = false; });
   $('#opNo', m)?.addEventListener('click', () => { $('#opConfirm', m).hidden = true; });
   $('#opYes', m)?.addEventListener('click', async () => { try { await rpc('purchases.cancel', p.id); await reloadItems(); closeModal(m); toast('Purchase cancelled, stock taken back out'); renderPurchases(); } catch (err) { $('#opErr', m).textContent = err.message; } });

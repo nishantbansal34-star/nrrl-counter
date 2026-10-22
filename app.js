@@ -474,6 +474,7 @@ function buildBill() {
     </div>
     <div class="quick" id="quick" hidden aria-label="Often sold"></div>
     <ul class="results" id="results"></ul>
+    <div class="heldbar" id="heldBar" hidden></div>
     <ul class="lines" id="lines"></ul>
     <div class="paybar" id="paybar"></div>`;
   $('#camOn').addEventListener('click', startCam);
@@ -614,6 +615,7 @@ function renderCart(fresh) {
         <button class="qb" type="button" data-dec="${i}" aria-label="One less">−</button>
         <input type="number" inputmode="decimal" data-q="${i}" value="${l.qty}" aria-label="Quantity">
         <button class="qb" type="button" data-inc="${i}" aria-label="One more">+</button>
+        ${quickKeys(l).map(k => `<button class="qk" type="button" data-qk="${k.k}" data-qi="${i}" title="${esc(k.title)}">${esc(k.label)}</button>`).join('')}
         ${own ? `<span class="sub">rate</span><input class="rate" type="number" inputmode="decimal" data-p="${i}" value="${l.price}" aria-label="Rate">` : ''}
         <button class="rm" type="button" data-rm="${i}">Remove</button>
       </div></li>`).join('')
@@ -625,6 +627,7 @@ function renderCart(fresh) {
     <div class="opts">
       <div class="seg" role="group" aria-label="Payment">${['cash', 'upi', 'udhaar'].map(p => `<button type="button" data-pay="${p}" aria-pressed="${c.payment === p}">${p === 'upi' ? 'UPI' : p === 'cash' ? 'Cash' : 'Udhaar'}</button>`).join('')}</div>
       ${own ? `<label class="sub" for="disc" style="margin-left:auto">Disc ₹</label><input type="number" inputmode="decimal" id="disc" value="${c.discount || ''}" placeholder="0">` : '<span style="margin-left:auto"></span>'}
+      <button class="btn sm" type="button" id="holdBtn" ${c.lines.length ? '' : 'disabled'}>Hold</button>
       <button class="btn sm" type="button" id="custBtn" aria-expanded="${!!(c.customer || c.phone || c.payment === 'udhaar')}">${c.customer ? esc(c.customer) : 'Customer'}</button>
     </div>
     <div class="more" id="custFields" ${c.customer || c.phone || c.payment === 'udhaar' ? '' : 'hidden'}>
@@ -634,14 +637,54 @@ function renderCart(fresh) {
   $('#saveBtn').addEventListener('click', saveBill);
   $('#paybar .seg').addEventListener('click', e => { const b = e.target.closest('[data-pay]'); if (!b) return; c.payment = b.dataset.pay; saveCart(); renderCart(); });
   $('#disc')?.addEventListener('change', e => { c.discount = Math.max(0, r2(e.target.value)); saveCart(); renderCart(); });
+  $('#holdBtn').addEventListener('click', holdBill);
+  renderHeld();
   $('#custBtn').addEventListener('click', () => { const f = $('#custFields'); f.hidden = !f.hidden; if (!f.hidden) $('#cName').focus(); });
   $('#cName').addEventListener('input', e => { c.customer = e.target.value; saveCart(); });
   $('#cPhone').addEventListener('input', e => { c.phone = e.target.value; saveCart(); });
 }
+/* one tap for a dozen, ten, or the item's own pack (its wholesale unit). First tap sets it, next tap adds another. */
+function quickKeys(l) {
+  const it = S.items.get(l.code), out = [], u = String(l.unit || '').toLowerCase();
+  if (!/^doz/.test(u)) out.push({ k: 'doz', n: 12, label: 'Doz', title: '12 ' + l.unit });
+  out.push({ k: 'ten', n: 10, label: '10', title: '10 ' + l.unit });
+  if (it && it.wholesale_unit && it.wholesale_unit !== l.unit && it.wholesale_qty > 1) out.push({ k: 'pack', n: it.wholesale_qty, label: `1 ${it.wholesale_unit}`, title: `${it.wholesale_qty} ${l.unit}` });
+  return out;
+}
+/* Hold a bill while the customer keeps shopping; serve the next person; tap it to continue. */
+S.held = LS.get('held', []);
+function holdText(c) { return `${c.customer || 'Customer'} · ${c.lines.length} item${c.lines.length === 1 ? '' : 's'} · ${money(c.lines.reduce((a, l) => a + l.price * l.qty, 0))}`; }
+function holdBill() {
+  if (!S.cart.lines.length) return;
+  S.held.push({ id: Date.now(), at: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), cart: S.cart });
+  LS.set('held', S.held); toast('Bill on hold: ' + holdText(S.cart));
+  S.cart = freshCart(S.cart); saveCart(); renderCart();
+}
+function renderHeld() {
+  const el = $('#heldBar'); if (!el) return;
+  el.hidden = !S.held.length;
+  el.innerHTML = '<span class="lbl">On hold</span>' + S.held.map(h => `<span class="hchip"><button type="button" data-hold="${h.id}">${esc(holdText(h.cart))} <small>${esc(h.at)}</small></button><button type="button" class="hx" data-hdel="${h.id}" aria-label="Delete held bill">×</button></span>`).join('');
+  if (!el._wired) {
+    el._wired = true;
+    el.addEventListener('click', e => {
+      const o = e.target.closest('[data-hold]'), x = e.target.closest('[data-hdel]');
+      if (o) {
+        const i = S.held.findIndex(h => h.id === +o.dataset.hold); if (i < 0) return;
+        const h = S.held.splice(i, 1)[0];
+        if (S.cart.lines.length) S.held.push({ id: Date.now(), at: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), cart: S.cart });
+        S.cart = h.cart; S.cart.lines.forEach(l => { const it = S.items.get(l.code); if (it && !can('rate')) l.price = priceFor(it); });
+        LS.set('held', S.held); saveCart(); renderCart();
+      }
+      if (x) { if (!confirmTap(x)) return; S.held = S.held.filter(h => h.id !== +x.dataset.hdel); LS.set('held', S.held); renderHeld(); }
+    });
+  }
+}
+function confirmTap(btn) { if (btn.dataset.armed) return true; btn.dataset.armed = '1'; btn.textContent = 'Delete?'; setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = '×'; } }, 2500); return false; }
 function onLineClick(e) {
   const b = e.target.closest('button'); if (!b) return;
   const L = S.cart.lines;
-  if (b.dataset.inc != null) L[b.dataset.inc].qty = r2(L[b.dataset.inc].qty + 1);
+  if (b.dataset.qk) { const l = L[+b.dataset.qi], k = l && quickKeys(l).find(x => x.k === b.dataset.qk); if (k) { l.qty = r2(l.qty === 1 ? k.n : l.qty + k.n); beep(true); } }
+  else if (b.dataset.inc != null) L[b.dataset.inc].qty = r2(L[b.dataset.inc].qty + 1);
   else if (b.dataset.dec != null) { const l = L[b.dataset.dec]; l.qty = r2(l.qty - 1); if (l.qty <= 0) L.splice(b.dataset.dec, 1); }
   else if (b.dataset.rm != null) L.splice(b.dataset.rm, 1);
   else return;
