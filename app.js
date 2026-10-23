@@ -147,6 +147,25 @@ function findItem(code) {
   return null;
 }
 
+/* Load a script only when it is needed (keeps start-up fast on older phones). Tries each address in turn. */
+const loaded = {};
+function loadScript(urls) {
+  const key = urls.join('|');
+  if (loaded[key]) return loaded[key];
+  return (loaded[key] = new Promise((resolve, reject) => {
+    let i = 0;
+    const next = () => {
+      if (i >= urls.length) { delete loaded[key]; return reject(new Error('Could not load ' + urls[0])); }
+      const el = document.createElement('script'); el.src = urls[i++]; el.async = true;
+      el.onload = () => resolve(); el.onerror = () => { el.remove(); next(); };
+      document.head.appendChild(el);
+    };
+    next();
+  }));
+}
+// barcode reader for phones without a built-in one; the Android app carries its own copy
+const ZXING = ['zxing.min.js', 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js'];
+
 /* ---------------- scanner ---------------- */
 const Scanner = (() => {
   let stream = null, video = null, onCode = null, running = false, busy = false, det, reader, cv, cx, lastZx = 0, frameCb = 0;
@@ -214,6 +233,8 @@ const Scanner = (() => {
   }
   async function start(videoEl, cb) {
     onCode = cb;
+    if (!window.ZXing && !('BarcodeDetector' in window)) loadScript(ZXING).catch(() => {});
+    else if (!window.ZXing) detector().then(d => { if (!d) loadScript(ZXING).catch(() => {}); });
     if (stream && video === videoEl) { running = true; schedule(); return true; }
     stop();
     video = videoEl;
@@ -366,7 +387,7 @@ async function refreshMe() {
   if (!S.token) return;
   try {
     const me = await api('counter_me', { p_token: S.token });
-    const changed = JSON.stringify([S.me?.role, S.me?.perms]) !== JSON.stringify([me.role, me.perms]);
+    const changed = !!(S.me && S.me.perms) && JSON.stringify([S.me.role, S.me.perms]) !== JSON.stringify([me.role, me.perms]);
     S.me = me; LS.set('me', me); renderWho();
     if (changed && !anySheetOpen() && !saving) { toast('Your access was updated by the owner'); showApp(S.view); }
   } catch (e) {}
@@ -634,6 +655,7 @@ function totals() {
 function renderCart(fresh) {
   const c = S.cart, own = can('rate');
   if (!$('#lines')) return;
+  $('#v-bill').classList.toggle('has-lines', c.lines.length > 0);
   if (!own && c.discount) c.discount = 0;
   $$('.billtools [data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === c.mode));
   const ul = $('#lines');
@@ -878,7 +900,7 @@ function billText(b) {
 }
 /* Bill as a PDF, shared from the phone (pick WhatsApp, then the customer). Android app only. */
 function billPdf(b) {
-  const { jsPDF } = window.NrrlNative;
+  const { jsPDF } = window.NrrlPdf;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const R = n => 'Rs. ' + (Math.round((+n || 0) * 100) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const asc = t => String(t ?? '').replace(/₹/g, 'Rs.').replace(/[^\x20-\x7e]/g, '');
@@ -913,11 +935,12 @@ function billPdf(b) {
   y += 12; doc.setFontSize(11); doc.text('Thank you for shopping with us!', 15, y);
   return doc.output('datauristring').split(',')[1];
 }
-const canPdf = () => !!(window.NrrlNative && window.NrrlNative.native && window.NrrlNative.jsPDF && window.NrrlNative.Share);
+const canPdf = () => !!(window.NrrlNative && window.NrrlNative.native && window.NrrlNative.Share);
 async function sharePdf(b) {
   const N = window.NrrlNative;
   try {
     toast('Making the PDF…');
+    if (!window.NrrlPdf) await loadScript(['pdf.js']); // the PDF maker loads the first time it is used
     const name = `Bill-${b.id || Date.now()}.pdf`;
     const w = await N.Filesystem.writeFile({ path: name, data: billPdf(b), directory: N.Directory.Cache });
     await N.Share.share({ title: 'Bill ' + (b.id || ''), text: `${CFG.shop} · Bill ${b.id || ''} · ₹${b.total}`, files: [w.uri], dialogTitle: 'Send bill PDF' });

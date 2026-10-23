@@ -13,7 +13,8 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://nbsrlpubmukksdpusxpx.supabase.co">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<!-- fonts load in the background: the app shows at once with the phone's own font, even on slow internet -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" media="print" onload="this.media='all'">
 <script>try{var t=JSON.parse(localStorage.getItem('nrrlc.theme')||'"light"');document.documentElement.dataset.theme=t;}catch(e){}</script>
 <style>
 /* Layout: counter-first. Live camera strip on top, bill lines in the middle, sticky total + save bar at the bottom. */
@@ -56,9 +57,9 @@ input[type=text],input[type=number],input[type=tel],input[type=search],input[typ
 .seg button{border:0;background:none;padding:7px 11px;border-radius:8px;font-weight:700;font-size:.85rem;color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.15)}
 .chip{display:inline-flex;align-items:center;border-radius:999px;padding:2px 8px;font-size:.72rem;font-weight:700;background:var(--sunk);color:var(--muted);white-space:nowrap}
-.chip.low{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
-.chip.out{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
-.chip.acc{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+.chip.low{background:rgba(184,110,0,.18);background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.chip.out{background:rgba(194,58,58,.16);background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+.chip.acc{background:rgba(74,47,189,.15);background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
 
 /* app shell */
 #app{height:100%;display:flex;flex-direction:column}
@@ -79,7 +80,7 @@ nav.tabs button[aria-current="page"]{color:var(--accent);background:var(--sunk)}
 
 /* bill screen */
 #v-bill{display:flex;flex-direction:column;height:100%}
-.cam{position:relative;background:#000;height:min(34vh,300px);flex:none;overflow:hidden}
+.cam{position:relative;background:#000;height:var(--camh);flex:none;overflow:hidden}
 .cam video{width:100%;height:100%;object-fit:cover;display:block}
 .cam .aim{position:absolute;left:50%;top:50%;width:min(72%,360px);height:56%;transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.85);border-radius:12px;box-shadow:0 0 0 999px rgba(0,0,0,.25);transition:border-color .15s,background .15s}
 .cam.hit .aim{border-color:#5ef08f;background:rgba(94,240,143,.18)}
@@ -98,7 +99,7 @@ nav.tabs button[aria-current="page"]{color:var(--accent);background:var(--sunk)}
 .lines{list-style:none;margin:0;padding:0;flex:1;overflow:auto}
 .line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:10px max(12px,env(safe-area-inset-right,0px)) 10px max(12px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:var(--surface)}
 .line.new{animation:pop .5s ease-out}
-@keyframes pop{from{background:color-mix(in srgb,var(--good) 25%,var(--surface))}to{background:var(--surface)}}
+@keyframes pop{from{background:#d7eedf;background:color-mix(in srgb,var(--good) 25%,var(--surface))}to{background:var(--surface)}}
 @media (prefers-reduced-motion:reduce){.line.new{animation:none}}
 .line .nm{font-weight:600;overflow-wrap:anywhere}
 .line .sub{color:var(--muted);font-size:.8rem}
@@ -165,11 +166,11 @@ nav.tabs button[aria-current="page"]{color:var(--accent);background:var(--sunk)}
 .acts2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
 .acts2 .w{grid-column:1/-1}
 .done-total{font-family:var(--f-mono);font-size:2.4rem;font-weight:600;margin:6px 0 2px}
-.confirm{background:color-mix(in srgb,var(--bad) 10%,transparent);border-radius:10px;padding:10px 12px;margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.confirm{background:rgba(194,58,58,.1);background:color-mix(in srgb,var(--bad) 10%,transparent);border-radius:10px;padding:10px 12px;margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .confirm span{flex:1 1 160px;font-size:.88rem}
 .toast{position:fixed;left:50%;top:calc(60px + env(safe-area-inset-top,0px));transform:translateX(-50%);z-index:60;background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:12px;font-weight:600;font-size:.92rem;max-width:calc(100% - 32px);box-shadow:0 6px 20px rgba(0,0,0,.25)}
 .toast.err{background:var(--bad);color:#fff}
-.banner{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--fg);font-size:.85rem;padding:8px 14px;text-align:center}
+.banner{background:rgba(184,110,0,.16);background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--fg);font-size:.85rem;padding:8px 14px;text-align:center}
 
 /* staff access switches */
 .perms{border-top:1px solid var(--line);margin-top:6px}
@@ -183,28 +184,68 @@ input.sw:checked::after{transform:translateX(18px)}
 input.sw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* fast scanner: the camera runs behind the page and shows through the scan window */
 html.native-scan,html.native-scan body{background:transparent!important}
-html.native-scan #v-bill{background:linear-gradient(transparent min(34vh,300px),var(--bg) 0)}
+html.native-scan #v-bill{background:linear-gradient(transparent var(--camh),var(--bg) 0)}
 html.native-scan .cam{background:transparent}
 html.native-scan .cam video{visibility:hidden}
 .quick{display:flex;gap:6px;overflow-x:auto;padding:0 max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:var(--surface);scrollbar-width:none}
 .quick::-webkit-scrollbar{display:none}
 .quick button{flex:none;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:99px;padding:6px 12px;font-size:.84rem;font-weight:600;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
 .results .code{color:var(--muted);font-size:.78rem;font-family:var(--f-mono)}
-.results mark{background:color-mix(in srgb,var(--marigold) 40%,transparent);color:inherit;border-radius:3px}
+.results mark{background:rgba(240,168,28,.4);background:color-mix(in srgb,var(--marigold) 40%,transparent);color:inherit;border-radius:3px}
 
 .ctr .qk{height:38px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-weight:700;font-size:.82rem;padding:0 9px;color:var(--fg)}
-.heldbar{display:flex;gap:6px;overflow-x:auto;align-items:center;padding:8px max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:color-mix(in srgb,var(--marigold) 18%,var(--surface));border-bottom:1px solid var(--line);scrollbar-width:none}
+.heldbar{display:flex;gap:6px;overflow-x:auto;align-items:center;padding:8px max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:#fdf1d8;background:color-mix(in srgb,var(--marigold) 18%,var(--surface));border-bottom:1px solid var(--line);scrollbar-width:none}
 .heldbar .lbl{flex:none;color:var(--marigold-ink);font-weight:800}
 .hchip{flex:none;display:inline-flex;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:99px}
 .hchip button{border:0;background:none;padding:6px 8px 6px 12px;font-weight:600;font-size:.84rem;color:var(--fg);white-space:nowrap}
 .hchip small{color:var(--muted);font-weight:500}
 .hchip .hx{padding:6px 10px 6px 4px;color:var(--muted);font-size:1rem}
+
+/* ---------- small and older phones ----------
+   The camera, search and pay bar used to leave no room for the bill itself on short screens. */
+:root{--camh:min(34vh,300px)}
+@media (max-height:760px){
+  :root{--camh:min(25vh,190px)}
+  .topbar{padding-top:calc(4px + env(safe-area-inset-top,0px));padding-bottom:4px}
+  .topbar h1{font-size:1.02rem}
+  .topbar .btn.sm{min-height:32px;padding:4px 10px;font-size:.8rem}
+  .themebtn{width:32px;height:32px}
+  .billtools{padding-top:6px;padding-bottom:6px}
+  .billtools input{padding:7px 10px}
+  .paybar{padding-top:6px;padding-bottom:6px;gap:6px 10px}
+  .paybar .tot{font-size:1.3rem}
+  .paybar .save{min-width:118px;font-size:1rem;padding:10px 14px}
+  .paybar .opts .btn.sm,.paybar .opts input{min-height:34px;padding:5px 10px}
+  .paybar .seg button{padding:5px 9px}
+  nav.tabs button{padding:4px 2px;font-size:.7rem}
+  nav.tabs svg{width:20px;height:20px}
+  .line{padding-top:7px;padding-bottom:7px}
+  .qb,.ctr .qk{height:34px}
+  .ctr input{height:34px}
+  /* pay bar in two short rows; options scroll sideways instead of wrapping onto a third row */
+  .paybar .opts{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  .paybar .opts::-webkit-scrollbar{display:none}
+  .paybar .opts>*{flex:none}
+  .paybar .meta{font-size:.72rem}
+}
+@media (max-height:640px){
+  :root{--camh:min(20vh,120px)}
+  /* once the bill has items, the "often sold" row makes room for the bill */
+  #v-bill.has-lines .quick{display:none}
+  .cam .flash{bottom:6px;padding:5px 10px;font-size:.82rem}
+}
+@media (max-width:380px){
+  .billtools input{flex:1 1 100px;min-width:0}
+  .billtools .seg button{padding:6px 8px;font-size:.8rem}
+  .paybar .save{min-width:104px}
+  .quick button{padding:5px 10px;font-size:.8rem}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <div class="toast" id="toast" hidden></div>
-<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js" defer></script>
 <script src="app.js" defer></script>
 </body>
 </html>

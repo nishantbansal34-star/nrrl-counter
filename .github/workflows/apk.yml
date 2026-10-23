@@ -38,8 +38,12 @@ jobs:
           npm init -y >/dev/null
           npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0 @capacitor-mlkit/barcode-scanning@6.2.0 @capacitor/filesystem@6.0.3 @capacitor/share@6.0.3 jspdf@2.5.2 esbuild@0.24.0
           # fast native barcode scanner (Google ML Kit) for the page
-          cp ../native/entry.js native-entry.js
-          npx esbuild native-entry.js --bundle --format=iife --minify --outfile=www/native.js
+          cp ../native/entry.js native-entry.js; cp ../native/pdf-entry.js pdf-entry.js
+          # target older Android WebViews too (Android 7+ with Chrome 61+): newer syntax is rewritten
+          npx esbuild native-entry.js --bundle --format=iife --minify --target=chrome61 --outfile=www/native.js
+          npx esbuild pdf-entry.js --bundle --format=iife --minify --target=chrome61 --outfile=www/pdf.js
+          npx esbuild www/app.js --minify --target=chrome61 --allow-overwrite --outfile=www/app.js
+          ls -la www
           sed -i 's#<script src="app.js" defer></script>#<script src="native.js"></script>\n<script src="app.js" defer></script>#' www/index.html
           grep -n "native.js" www/index.html
           npx cap init "NRRL Counter" in.nrrl.counter --web-dir www
