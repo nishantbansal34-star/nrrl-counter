@@ -2,7 +2,7 @@ name: Build Windows app
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'check/**']
     paths: ['desktop/**', '.github/workflows/desktop.yml']
   workflow_dispatch:
 
@@ -57,12 +57,21 @@ jobs:
           JS
           npx electron smoke.js
 
+      - name: Open the whole app, visit every screen, make a bill, PDF, return and purchase
+        env:
+          NRRL_SELFTEST: '1'
+          NRRL_DATA_DIR: ${{ runner.temp }}/nrrl-selftest
+        run: |
+          npx electron . 2>&1 | tee selftest.log
+          grep -q "SELFTEST OK" selftest.log
+
       - uses: actions/upload-artifact@v4
         with:
           name: nrrl-billing-windows
           path: NRRL-Billing-Setup.exe
 
       - name: Publish download
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: .

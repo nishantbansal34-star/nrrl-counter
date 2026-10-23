@@ -69,7 +69,10 @@ function makeHandlers(ctx) {
       let ok = st().hasPin() && st().checkPin(pin);
       if (!ok && ctx.link && ctx.link.staffLogin) {
         const owners = st().staffList().filter(x => x.role === 'owner' && x.active && (!ownerId || x.id === ownerId));
-        for (const o of owners) { try { await ctx.link.staffLogin(o.id, pin); ok = true; break; } catch (e) { if (/blocked|internet/i.test(e.message) && owners.length === 1) throw e; } }
+        // a PIN that already worked on this laptop is checked here first; only otherwise ask the server
+        // (each wrong try on the server counts towards that owner's 5-try lock)
+        if (owners.some(o => st().checkStaffPin(o.id, pin) === true)) ok = true;
+        else for (const o of owners) { try { await ctx.link.staffLogin(o.id, pin); ok = true; break; } catch (e) { if (/blocked|internet/i.test(e.message) && owners.length === 1) throw e; } }
       }
       st().who = user ? user.name : 'Counter';
       st().audit(ok ? 'owner.unlock' : 'owner.pin.wrong', '', ok ? 'owner PIN entered (15 minutes)' : 'wrong owner PIN');

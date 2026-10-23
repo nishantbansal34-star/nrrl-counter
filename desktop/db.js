@@ -221,7 +221,8 @@ class Store {
     this.setSetting('label_sizes', JSON.stringify(list));
   }
   setLabelLogo(png, bits) {
-    if (png && !/^data:image\/png;base64,/.test(png)) throw new Error('Logo must be a picture.');
+    if (png && !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(png)) throw new Error('Logo must be a picture.');
+    if (bits && !(bits.w > 0 && bits.h > 0 && /^[A-Za-z0-9+/]+=*$/.test(String(bits.data || '')))) throw new Error('Logo must be a picture.');
     if (png && png.length > 600000) throw new Error('Logo picture is too big. Use a smaller image.');
     this.setSetting('label_logo', png || ''); this.setSetting('label_logo_bits', bits ? JSON.stringify(bits) : '');
     if (png) this.setSetting('label_show_logo', '1');
@@ -478,6 +479,9 @@ class Store {
     if (!b) throw new Error('Bill not found.');
     if (b.cancelled) return b;
     if (b.returned > 0) throw new Error('Some items from this bill were already returned. Return the rest instead of cancelling.');
+    // a bill made on the phone app or another laptop can only be cancelled where it was made; cancelling it here
+    // would change only this laptop and be undone by the next sync
+    if (!this._ownBill(b.bill_no)) throw new Error(/^M\d+$/.test(b.bill_no) ? 'This bill was made on the phone app. Cancel it in the phone app, or use Return items here.' : 'This bill was made on another laptop. Cancel it on that laptop, or use Return items here.');
     this.db.transaction(() => {
       const inc = this.db.prepare('update items set stock=round(stock+?,2) where code=? and stock is not null');
       for (const l of b.lines) {
@@ -489,8 +493,13 @@ class Store {
       this.audit('bill.cancel', b.bill_no, `₹${b.total} ${b.payment}${b.customer ? ' · ' + b.customer : ''}`);
     })();
     this.enqueue('cancel', { bill_no: b.bill_no });
-    if (!/^(M\d+|L\d+-.*)$/.test(b.bill_no) || (this.getSetting('bill_prefix') && b.bill_no.startsWith(this.getSetting('bill_prefix')))) this.linkPush('cancel', { bill_no: b.bill_no });
+    this.linkPush('cancel', { bill_no: b.bill_no });
     return this.getBill(id);
+  }
+  _ownBill(no) {
+    if (!this.linkOn()) return true;
+    const pre = this.getSetting('bill_prefix');
+    return !/^(M\d+|L\d+-.*)$/.test(no) || !!(pre && no.startsWith(pre));
   }
   summary(from, to) {
     const [a, b] = this._range(from, to);
@@ -590,6 +599,21 @@ class Store {
         for (const l of lines) ins.run(info.lastInsertRowid, String(l.code), String(l.name || l.code), l.unit || 'pcs', l.hsn || '', +l.gst || 0, +l.qty || 0, r2(l.price), r2(l.amount), +l.factor || 1);
         if (!fromPc) this.enqueue('bill', this.getBill(info.lastInsertRowid)); // a laptop sends its own bills to the sheet
         n++;
+      }
+    })();
+    return n;
+  }
+  // the same numbering as importPhoneBills: phone bills M<id>, other laptops' bills by their code
+  markRemoteCancelled(list) {
+    let n = 0;
+    const up = this.db.prepare('update bills set cancelled=1, cancelled_at=? where bill_no=? and cancelled=0');
+    this.db.transaction(() => {
+      for (const b of list) {
+        let no = 'M' + b.id;
+        const m = b.source === 'pc' ? /^pc-(L\d+)-(.*)$/.exec(b.client_id || '') : null;
+        if (b.source === 'pc' && !m) continue;
+        if (m) no = m[2].startsWith(m[1] + '-') ? m[2] : m[1] + '-' + m[2];
+        if (up.run(nowLocal(), no).changes) { n++; if (b.source !== 'pc') this.enqueue('cancel', { bill_no: no }); }
       }
     })();
     return n;

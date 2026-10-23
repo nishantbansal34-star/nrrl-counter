@@ -232,3 +232,4 @@ table.grid tr.warnrow td:nth-child(3) { color: var(--bad); font-weight: 600; }
 .heldchip { display: inline-flex; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 99px; padding-left: 4px; }
 .heldchip > button:first-child { border: 0; background: none; padding: 4px 6px 4px 8px; font-weight: 600; font-size: 13px; }
 .heldchip .xbtn { width: 26px; height: 26px; font-size: 16px; }
+@media (max-width: 1250px) { .hintline span:nth-child(n+5) { display: none; } }

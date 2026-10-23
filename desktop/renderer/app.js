@@ -154,10 +154,12 @@ $('#lockBtn').addEventListener('click', async () => {
   renderLock(); refreshView();
 });
 setInterval(() => { renderLock(); }, 30000);
+// with two owners, the PIN is checked against the one chosen, so a mistake doesn't count against both
+const owners = () => (S.auth.staff || []).filter(x => x.role === 'owner');
 function ownerPrompt(title = 'Owner PIN needed') {
   return new Promise(resolve => {
     const m = openModal(`<h2>${esc(title)}</h2><p class="muted">${staffMode() ? 'You don’t have access to this. The owner can enter their PIN to allow it.' : 'Enter the owner PIN to continue.'}</p>
-      <form class="pinpad" id="pinForm"><input type="password" id="pinIn" inputmode="numeric" maxlength="8" autocomplete="off">
+      <form class="pinpad" id="pinForm">${owners().length > 1 ? `<select id="pinWho" aria-label="Which owner">${owners().map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select>` : ''}<input type="password" id="pinIn" inputmode="numeric" maxlength="8" autocomplete="off">
       <div class="err" id="pinErr"></div>
       <div class="foot"><button class="btn" type="button" data-close>Cancel</button><button class="btn accent" type="submit">Unlock</button></div></form>`,
       { onClose: () => resolve(false) });
@@ -166,7 +168,7 @@ function ownerPrompt(title = 'Owner PIN needed') {
       e.preventDefault();
       $('#pinErr', m).textContent = 'Checking…';
       let ok = false;
-      try { ok = await rpc('auth.owner', $('#pinIn', m).value); } catch (err) { $('#pinErr', m).textContent = err.message; return; }
+      try { ok = await rpc('auth.owner', $('#pinIn', m).value, $('#pinWho', m)?.value || null); } catch (err) { $('#pinErr', m).textContent = err.message; return; }
       if (!ok) { $('#pinErr', m).textContent = 'Wrong PIN.'; $('#pinIn', m).select(); beep(false); return; }
       S.unlockedUntil = Date.now() + 15 * 60e3;
       m._onClose = null; closeModal(m); renderLock(); resolve(true);
@@ -226,6 +228,15 @@ async function signOut(msg) {
 }
 
 /* ================= modals ================= */
+// A second click on a dialog's main button within a moment is ignored, so a double-click can't save twice
+// (two payments, two purchases, two cancellations).
+document.addEventListener('click', e => {
+  const b = e.target.closest('.modal .foot button.accent, .modal .foot button.danger, .modal .confirmbar button.danger, .modal .foot button.primary');
+  if (!b) return;
+  const t = +b.dataset.lastClick || 0;
+  if (Date.now() - t < 1500) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+  b.dataset.lastClick = String(Date.now());
+}, true);
 function openModal(html, opts = {}) {
   const m = document.createElement('div');
   m.className = 'modal';

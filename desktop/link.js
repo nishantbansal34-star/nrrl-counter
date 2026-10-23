@@ -30,6 +30,21 @@ function createLink(getStore, onChange) {
   const state = { busy: false, lastOk: null, lastError: '' };
   let timer = null;
 
+  // One change the server keeps refusing (not a connection problem) must not hold up everything behind it:
+  // after 5 refusals it is set aside, written to the change log, and the rest carry on.
+  const GIVE_UP = 5;
+  function setAside(st, rows, e) {
+    st.linkDone(rows.map(x => x.id));
+    for (const x of rows) { st.who = 'Sync'; st.audit('sync.failed', x.kind, `${e.message} · ${x.payload.slice(0, 300)}`); }
+    state.setAside = (state.setAside || 0) + rows.length;
+  }
+  async function sendOne(key, r) {
+    const p = JSON.parse(r.payload);
+    if (r.kind === 'item') return rpc('counter_dev_items_put', { p_key: key, p_items: [p], p_force_stock: false });
+    if (r.kind === 'bill') return rpc('counter_dev_bill_push', { p_key: key, p_bill: p });
+    if (r.kind === 'cancel') return rpc('counter_dev_bill_cancel', { p_key: key, p_bill_no: p.bill_no });
+    if (r.kind === 'stock') return rpc('counter_dev_stock_add', { p_key: key, p_code: p.code, p_delta: p.delta });
+  }
   async function pushQueue(st, key) {
     for (let round = 0; round < 40; round++) {
       const rows = st.linkPeek(50);
@@ -42,16 +57,22 @@ function createLink(getStore, onChange) {
           const run = [];
           while (i < rows.length && rows[i].kind === 'item') run.push(rows[i++]);
           try { await rpc('counter_dev_items_put', { p_key: key, p_items: run.map(x => JSON.parse(x.payload)), p_force_stock: false }); st.linkDone(run.map(x => x.id)); }
-          catch (e) { st.linkFail(run.map(x => x.id), e.message); throw e; }
+          catch (e) {
+            if (e.net || run.length === 1) { st.linkFail(run.map(x => x.id), e.message); if (!e.net && run[0].tries + 1 >= GIVE_UP) { setAside(st, run, e); continue; } throw e; }
+            // the batch was refused: send them one at a time to find the one at fault
+            for (const x of run) {
+              try { await sendOne(key, x); st.linkDone([x.id]); }
+              catch (e2) { st.linkFail([x.id], e2.message); if (e2.net) throw e2; if (x.tries + 1 >= GIVE_UP) setAside(st, [x], e2); }
+            }
+          }
           continue;
         }
-        const p = JSON.parse(r.payload);
-        try {
-          if (r.kind === 'bill') await rpc('counter_dev_bill_push', { p_key: key, p_bill: p });
-          else if (r.kind === 'cancel') await rpc('counter_dev_bill_cancel', { p_key: key, p_bill_no: p.bill_no });
-          else if (r.kind === 'stock') await rpc('counter_dev_stock_add', { p_key: key, p_code: p.code, p_delta: p.delta });
-          st.linkDone([r.id]);
-        } catch (e) { st.linkFail([r.id], e.message); throw e; }
+        try { await sendOne(key, r); st.linkDone([r.id]); }
+        catch (e) {
+          st.linkFail([r.id], e.message);
+          if (!e.net && r.tries + 1 >= GIVE_UP) { setAside(st, [r], e); i++; continue; }
+          throw e;
+        }
         i++;
       }
     }
@@ -73,7 +94,16 @@ function createLink(getStore, onChange) {
       st.setSetting('link_bills_after', String(after));
       if (bills.length < 500) break;
     }
-    if (changed || newBills) onChange({ items: changed, bills: newBills });
+    // bills cancelled on the phone app or another laptop after they were copied here
+    let voided = 0;
+    if (state.voidedOk !== false) {
+      try {
+        const v = await rpc('counter_dev_bills_voided', { p_key: key, p_since: st.getSetting('link_voided_at') || null });
+        voided = st.markRemoteCancelled(v.bills || []);
+        st.setSetting('link_voided_at', v.now);
+      } catch (e) { if (e.net) throw e; if (/counter_dev_bills_voided|PGRST202|Could not find|404/i.test(String(e.message) + String(e.code))) state.voidedOk = false; }
+    }
+    if (changed || newBills || voided) onChange({ items: changed, bills: newBills, voided });
   }
   // give each laptop its own bill numbers (L2-1, L2-2…) so two laptops never clash
   function useCode(st, code) {
@@ -109,7 +139,7 @@ function createLink(getStore, onChange) {
     start() { if (!timer) timer = setInterval(() => tick().catch(() => {}), 10000); setTimeout(() => tick().catch(() => {}), 2000); },
     soon() { setTimeout(() => tick().catch(() => {}), 300); },
     tick,
-    status() { const st = getStore(); return { linked: !!st.getSetting('link_key'), name: st.getSetting('link_name'), code: st.getSetting('link_code'), prefix: st.getSetting('bill_prefix'), pending: st.linkCount(), lastOk: state.lastOk, lastError: state.lastError, busy: state.busy }; },
+    status() { const st = getStore(); return { linked: !!st.getSetting('link_key'), name: st.getSetting('link_name'), code: st.getSetting('link_code'), prefix: st.getSetting('bill_prefix'), setAside: state.setAside || 0, pending: st.linkCount(), lastOk: state.lastOk, lastError: state.lastError, busy: state.busy }; },
     owners: async () => (await rpc('counter_staff_list', {})).filter(s => s.role === 'owner'),
     /* First link: log in as an owner, register this laptop, send everything the laptop has (its stock wins),
        then bring in what only the phone app has. */

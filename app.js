@@ -46,17 +46,23 @@ const ERR = {
   UNKNOWN_ITEM: 'An item on this bill was removed from the item list. Remove it and try again.',
   PIN_FORMAT: 'PIN must be 4 to 8 digits.',
   CANT_DEMOTE_SELF: 'You can’t remove your own owner access.',
+  NO_ACCESS: 'You don’t have access to this. Ask the owner.',
+  'Request timed out': 'The internet is too slow right now. Try again.',
 };
 class ApiError extends Error { constructor(code, net) { super(ERR[code] || code); this.code = code; this.net = !!net; } }
 async function api(fn, args = {}) {
   let res;
+  // a slow or stuck connection must not leave the screen waiting forever: after 20 s it counts as offline
+  // (a bill is then kept on the phone and sent again later; the server ignores a bill it already has)
+  const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 20000);
   try {
     res = await fetch(`${CFG.url}/rest/v1/rpc/${fn}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: CFG.key },
-      body: JSON.stringify(args),
+      body: JSON.stringify(args), signal: ctrl.signal,
     });
-  } catch (e) { setNet(false); throw new ApiError('No internet connection.', true); }
+  } catch (e) { setNet(false); throw new ApiError(e && e.name === 'AbortError' ? 'The internet is too slow right now. Try again.' : 'No internet connection.', true); }
+  finally { clearTimeout(timer); }
   setNet(true);
   const txt = await res.text();
   let data = null; try { data = txt ? JSON.parse(txt) : null; } catch (e) {}
@@ -94,8 +100,31 @@ const can = k => isOwner() || !!((S.me?.perms && k in S.me.perms) ? S.me.perms[k
 function saveCart() { LS.set('cart', S.cart); }
 (LS.get('items', []) || []).forEach(i => S.items.set(i.code, i));
 
+/* Item list: the whole list at start and every 10 minutes; in between only what changed (much less mobile data
+   when there are thousands of items). If the server doesn't offer changes-only yet, the whole list is used. */
+let itemsAt = null, itemsFullAt = 0, sinceOk = true;
 async function loadItems(quiet) {
   try {
+    if (sinceOk) {
+      const full = !itemsAt || Date.now() - itemsFullAt > 10 * 60e3;
+      try {
+        const r = await api('counter_items_since', { p_token: S.token, p_since: full ? null : itemsAt });
+        if (!r || !Array.isArray(r.items)) { const e = new Error('Could not find counter_items_since'); e.code = 'PGRST202'; throw e; }
+        itemsAt = r.now; // the server's clock, so a wrong phone clock can't make it miss changes
+        if (full) { itemsFullAt = Date.now(); S.items.clear(); }
+        if (full || (r.items && r.items.length)) {
+          for (const i of r.items || []) { if (i.removed) S.items.delete(String(i.code)); else S.items.set(String(i.code), normItem(i)); }
+          LS.set('items', [...S.items.values()]);
+          if (S.view === 'items') renderItems();
+          renderQuick();
+        }
+        return;
+      } catch (e) {
+        if (e.net) throw e;
+        // older server without changes-only: fall back to the whole list
+        if (/counter_items_since|PGRST202|Could not find|Server error 404/i.test(String(e.message) + ' ' + String(e.code))) sinceOk = false; else throw e;
+      }
+    }
     const list = await api('counter_items', { p_token: S.token });
     S.items.clear(); list.forEach(i => S.items.set(i.code, normItem(i)));
     LS.set('items', [...S.items.values()]);
@@ -784,7 +813,8 @@ async function saveBill() {
     else { toast(e.message, true); saving = false; renderCart(); return; }
   }
   // apply stock locally so warnings stay right between refreshes
-  c.lines.forEach(l => { const it = S.items.get(l.code); if (it && it.stock != null) it.stock = r2(it.stock - l.qty); });
+  // wholesale lines in packs/dozens take out that many pieces
+  c.lines.forEach(l => { const it = S.items.get(l.code); if (it && it.stock != null) { const f = it.wholesale_unit && l.unit === it.wholesale_unit && it.wholesale_unit !== it.unit && it.wholesale_qty > 0 ? it.wholesale_qty : 1; it.stock = r2(it.stock - l.qty * f); } });
   S.cart = freshCart(c); saveCart(); saving = false; renderCart(); renderPendingBanner();
   showDone(bill || local, offline);
 }
@@ -806,7 +836,27 @@ function renderPendingBanner() {
   const b = $('#pendBanner'); if (!b) return;
   const n = S.pending.length, failed = S.pending.filter(p => p.error).length;
   b.hidden = !n;
-  b.textContent = failed ? `${failed} bill(s) could not upload: ${S.pending.find(p => p.error).error}` : `${n} bill(s) saved on this phone, uploading when internet is back…`;
+  b.textContent = failed ? `${failed} bill(s) could not upload: ${S.pending.find(p => p.error).error} — tap to see` : `${n} bill(s) saved on this phone, uploading when internet is back…`;
+  b.style.cursor = failed ? 'pointer' : '';
+  b.onclick = failed ? failedBillsSheet : null;
+}
+/* Bills the server refused (not a connection problem) would otherwise retry forever: show them and let the owner remove them. */
+function failedBillsSheet() {
+  const bad = S.pending.filter(p => p.error);
+  if (!bad.length) return;
+  const d = openSheet('failSheet', `<h3>Bills that could not upload</h3>
+    <p class="s">The server refused these. Check the reason, fix it (for example add the missing item), then tap Try again. Remove a bill only if you are sure it should not count.</p>
+    <ul class="list">${bad.map((p, i) => `<li style="padding:8px 0;border-bottom:1px solid var(--line)"><b>${money(p.local.total)}</b> · ${esc(p.local.customer || 'Walk-in')} · ${new Date(p.local.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}<div class="hint">${esc(p.error)}</div>
+      <div class="hint">${p.local.lines.map(l => esc(`${l.qty} × ${l.name}`)).join(', ')}</div><button class="btn sm danger" type="button" data-drop="${i}" data-twotap style="margin-top:6px">Remove this bill</button></li>`).join('')}</ul>
+    <div class="acts2"><button class="btn" type="button" id="fsClose">Close</button><button class="btn primary" type="button" id="fsRetry">Try again</button></div>`);
+  $('#fsClose', d).addEventListener('click', closeSheet);
+  $('#fsRetry', d).addEventListener('click', () => { S.pending.forEach(p => { delete p.error; }); LS.set('pending', S.pending); closeSheet(); syncPending(); });
+  d.addEventListener('click', e => {
+    const x = e.target.closest('[data-drop]'); if (!x) return;
+    if (!confirmTap(x)) return;
+    const p = bad[+x.dataset.drop]; S.pending = S.pending.filter(y => y !== p); LS.set('pending', S.pending);
+    closeSheet(); renderPendingBanner(); toast('Bill removed'); if (S.pending.some(y => y.error)) failedBillsSheet();
+  });
 }
 setInterval(() => { if (S.token) syncPending(); }, 20000);
 window.addEventListener('online', () => S.token && syncPending());
@@ -884,6 +934,14 @@ function openSheet(id, html, onClose) {
   document.body.appendChild(d);
   return d;
 }
+// a second tap on a sheet's main button within a moment is ignored (no double bills, double staff, double cancels)
+document.addEventListener('click', e => {
+  const b = e.target.closest('.sheet button.primary, .sheet button.danger, .sheet button[type=submit], .confirm button.danger');
+  if (!b || b.hasAttribute('data-twotap')) return; // "tap again to confirm" buttons need the second tap
+  const t = +b.dataset.lastTap || 0;
+  if (Date.now() - t < 1500) { e.stopImmediatePropagation(); e.preventDefault(); return; }
+  b.dataset.lastTap = String(Date.now());
+}, true);
 function closeSheet() { const s = $('.sheet'); if (!s) return; const f = s._onClose; s.remove(); f && f(); }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSheet(); });
 

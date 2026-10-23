@@ -56,10 +56,15 @@ function migrateLedger(st) {
     create table if not exists audit(
       id integer primary key autoincrement, at text not null, who text not null default '', action text not null, ref text not null default '', detail text not null default '');
     create index if not exists audit_at on audit(at);
+    create index if not exists returns_customer on returns(customer_id);
+    create index if not exists purchases_supplier on purchases(supplier_id);
+    create index if not exists supplier_payments_sup on supplier_payments(supplier_id);
+    create index if not exists payments_bill on payments(bill_id);
   `);
   const addCol = (t, c, def) => { if (!st.db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) st.db.exec(`alter table ${t} add column ${c} ${def}`); };
   addCol('bills', 'customer_id', 'integer');
   addCol('bills', 'returned', 'real not null default 0');
+  st.db.exec('create index if not exists bills_customer on bills(customer_id)'); // after the column exists on older files
   // udhaar bills made before accounts existed get their customer
   for (const b of st.db.prepare("select id, customer, phone from bills where payment='udhaar' and customer_id is null").all()) {
     const c = st.ensureCustomer(b.customer, b.phone);

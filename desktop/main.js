@@ -14,7 +14,7 @@ if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 let win = null, store = null, dirty = false, quitting = false;
 const sync = createSync(() => store);
 const link = createLink(() => store, changes => { if (win && !win.isDestroyed()) win.webContents.send('data-changed', changes); });
-const dataDir = () => path.join(app.getPath('documents'), 'NRRL Billing');
+const dataDir = () => process.env.NRRL_DATA_DIR || path.join(app.getPath('documents'), 'NRRL Billing');
 const backupDir = () => path.join(dataDir(), 'Backups');
 const dbFile = () => path.join(dataDir(), 'nrrl-billing.db');
 
@@ -157,6 +157,44 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.webContents.on('will-navigate', e => e.preventDefault());
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  if (process.env.NRRL_SELFTEST) selfTest();
+}
+/* Build check: open the real app, visit every screen, make a bill, its PDF and a return, and exit 0 only if nothing failed. */
+function selfTest() {
+  const errors = [];
+  win.webContents.on('console-message', (e, level, message) => { if (level >= 3) errors.push('console: ' + message); });
+  win.webContents.on('render-process-gone', (e, d) => errors.push('renderer gone: ' + d.reason));
+  win.webContents.once('did-finish-load', async () => {
+    try {
+      await new Promise(r => setTimeout(r, 2500));
+      const res = await win.webContents.executeJavaScript(`(async () => {
+        const out = [], call = (m, ...a) => window.api.call(m, ...a), wait = t => new Promise(r => setTimeout(r, t));
+        await call('items.save', { code: 'ST1', name: 'Self test item', retail: 20, wholesale: 150, wholesale_unit: 'dozen', wholesale_qty: 12, stock: 100, hsn: '9505' });
+        const b = await call('bills.save', { payment: 'udhaar', customer: 'Self Test', phone: '9000000000', lines: [{ code: 'ST1', qty: 3 }], paid_now: 10 });
+        if (b.total !== 60) out.push('bill total ' + b.total);
+        const r = await call('returns.save', { bill_id: b.id, refund_mode: 'account', lines: [{ code: 'ST1', qty: 1 }] });
+        if (r.total !== 20) out.push('return total ' + r.total);
+        const c = await call('customers.find', 'Self Test', '9000000000');
+        if (!c || c.balance !== 30) out.push('udhaar balance ' + (c && c.balance));
+        const p = await call('purchases.save', { supplier: 'Self Test Supplier', lines: [{ code: 'ST1', qty: 5, cost: 12 }] });
+        if (p.total !== 60) out.push('purchase total ' + p.total);
+        const f = await call('bills.pdf', b.id);
+        out.push('pdf:' + f);
+        for (const v of ['bill', 'items', 'sales', 'customers', 'purchases', 'log', 'settings']) {
+          document.querySelector('[data-view="' + v + '"]').click(); await wait(700);
+          if (!document.getElementById('v-' + v).innerText.trim()) out.push('empty screen ' + v);
+        }
+        return out;
+      })()`);
+      const pdf = (res.find(x => x.startsWith('pdf:')) || '').slice(4);
+      const problems = res.filter(x => !x.startsWith('pdf:'));
+      if (!pdf || !fs.existsSync(pdf) || fs.statSync(pdf).size < 5000) problems.push('PDF not made');
+      else console.log('SELFTEST pdf ' + fs.statSync(pdf).size + ' bytes');
+      problems.push(...errors);
+      console.log(problems.length ? 'SELFTEST FAIL ' + JSON.stringify(problems) : 'SELFTEST OK');
+      app.exit(problems.length ? 1 : 0);
+    } catch (e) { console.log('SELFTEST FAIL ' + e.message); app.exit(1); }
+  });
 }
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
