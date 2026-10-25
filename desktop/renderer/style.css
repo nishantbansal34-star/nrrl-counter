@@ -233,3 +233,9 @@ table.grid tr.warnrow td:nth-child(3) { color: var(--bad); font-weight: 600; }
 .heldchip > button:first-child { border: 0; background: none; padding: 4px 6px 4px 8px; font-weight: 600; font-size: 13px; }
 .heldchip .xbtn { width: 26px; height: 26px; font-size: 16px; }
 @media (max-width: 1250px) { .hintline span:nth-child(n+5) { display: none; } }
+.incoming { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px; }
+.incoming .inc { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.names.pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.names.pick button { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 14px 12px; font-size: 16px; font-weight: 700; display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
+.names.pick button:hover { border-color: var(--accent); background: var(--accent-soft); }
+.names.pick small { font-size: 12px; font-weight: 500; color: var(--muted); }

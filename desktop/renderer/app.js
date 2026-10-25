@@ -55,8 +55,10 @@ const S = {
   cart: LS.get('cart', null) || newCart(),
   sel: 0, unlockedUntil: 0, lastBill: null, printers: null,
 };
-function newCart(prev) { return { lines: [], mode: prev?.mode || 'retail', payment: 'cash', discount: 0, customer: '', phone: '', received: '' }; }
-const saveCart = () => LS.set('cart', S.cart);
+function cartId() { return 'pc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function newCart(prev) { return { id: cartId(), lines: [], mode: prev?.mode || 'retail', payment: 'cash', discount: 0, customer: '', phone: '', received: '' }; }
+const saveCart = () => { LS.set('cart', S.cart); scheduleLive(); };
+if (!S.cart.id) S.cart.id = cartId();
 async function reloadItems() {
   const list = await rpc('items.all');
   S.items.clear();
@@ -144,6 +146,7 @@ function renderLock() {
     if (staffMode()) u.innerHTML = `<span class="who"><b>${esc(S.auth.user.name)}</b><small>${S.auth.user.role === 'owner' ? 'Owner' : 'Staff'}</small></span><button type="button" class="btn sm" id="switchUser">Switch</button>`;
     $('#switchUser')?.addEventListener('click', () => signOut());
   }
+  const lvBtn = $('#nav [data-view="live"]'); if (lvBtn) lvBtn.hidden = !(liveOn() && S.auth.user.role === 'owner');
   const needs = staffMode() ? S.auth.user.role !== 'owner' : S.settings.hasPin;
   b.hidden = !needs;
   b.textContent = locked() ? 'Owner: locked' : 'Owner: unlocked · Lock';
@@ -208,7 +211,7 @@ function showSignIn() {
         try {
           S.auth.user = await rpc('auth.login', pick.id, $('#siPin', el).value);
           S.unlockedUntil = 0;
-          el.remove(); renderLock(); toast('Signed in as ' + S.auth.user.name);
+          el.remove(); renderLock(); toast('Signed in as ' + S.auth.user.name); LIVE.sent = {}; LS.set('liveSent', {}); liveRefresh();
           buildBill(); show(can('bill') ? 'bill' : 'items');
         } catch (err) { $('#siErr', el).textContent = err.message; $('#siPin', el).value = ''; beep(false); }
       });
@@ -219,12 +222,134 @@ function showSignIn() {
   draw();
 }
 async function signOut(msg) {
+  // bills on this laptop stay here for whoever signs in next: take them off this person's live list first,
+  // and give them new numbers so they can't clash with what the server still has under this person
+  for (const id of Object.keys(LIVE.sent)) await rpc('carts.close', id).catch(() => {});
+  LIVE.sent = {}; LIVE.rows = []; LS.set('liveSent', {});
+  if (S.cart.id) { S.cart.id = cartId(); LS.set('cart', S.cart); }
+  for (const h of S.held) h.cart.id = cartId(); saveHeld();
   await rpc('auth.logout').catch(() => {});
   S.auth.user = null; S.unlockedUntil = 0;
   closeModal(); renderLock();
   if (msg) toast(msg, { err: true, ms: 6000 });
   await loadAuth();
   if (needSignIn()) showSignIn();
+}
+
+/* ================= live bills =================
+   With the laptop linked and someone signed in, every open bill (and every bill on hold) is kept on the server while
+   it is being made: it can be sent to another person on a phone or laptop, and the owner sees all of them. */
+const LIVE = { sent: LS.get('liveSent', {}), rows: [], busy: false, t: 0, open: null };
+const liveOn = () => !!(S.auth && S.auth.user && S.auth.linked);
+const liveHash = c => JSON.stringify([c.lines, c.discount, c.customer, c.phone, c.mode, c.payment]);
+function scheduleLive() { clearTimeout(LIVE.t); LIVE.t = setTimeout(() => liveSync().catch(() => {}), 1200); }
+// phone bills keep "price", laptop bills "rate": send both so either side can open the other's bill
+const liveCart = c => ({ ...c, lines: c.lines.map(l => ({ ...l, price: l.rate ?? l.price, rate: l.rate ?? l.price })) });
+async function liveSync() {
+  if (!liveOn() || LIVE.busy) return;
+  LIVE.busy = true;
+  try {
+    const want = {};
+    if (S.cart.lines.length) want[S.cart.id] = { cart: S.cart, state: 'open' };
+    for (const h of S.held || []) if (h.cart.lines.length) { if (!h.cart.id) h.cart.id = cartId(); want[h.cart.id] = { cart: h.cart, state: 'held' }; }
+    for (const [id, w] of Object.entries(want)) {
+      const hash = w.state + liveHash(w.cart);
+      if (LIVE.sent[id] === hash) continue;
+      const r = await rpc('carts.put', id, liveCart(w.cart), w.state);
+      if (r && r.moved) { lostCart(id, r.to); continue; }
+      LIVE.sent[id] = hash;
+    }
+    for (const id of Object.keys(LIVE.sent)) { if (want[id]) continue; await rpc('carts.close', id); delete LIVE.sent[id]; }
+  } catch (e) { /* offline: tried again on the next change or refresh */ }
+  finally { LS.set('liveSent', LIVE.sent); LIVE.busy = false; }
+}
+function lostCart(id, to) {
+  delete LIVE.sent[id];
+  if (S.cart.id === id) { S.cart = newCart(S.cart); LS.set('cart', S.cart); renderCart(); toast(`This bill is now with ${to}.`, { err: true, ms: 6000 }); }
+  const n = S.held.length; S.held = S.held.filter(h => h.cart.id !== id);
+  if (S.held.length !== n) { saveHeld(); renderHeld(); toast(`A held bill is now with ${to}.`, { err: true }); }
+}
+async function liveRefresh() {
+  if (!liveOn()) { LIVE.rows = []; renderIncoming(); return; }
+  if (LIVE.refreshing) return;
+  LIVE.refreshing = true;
+  try { await liveRefreshNow(); } finally { LIVE.refreshing = false; }
+}
+async function liveRefreshNow() {
+  await liveSync().catch(() => {});
+  const before = Object.keys(LIVE.sent);
+  try { LIVE.rows = await rpc('carts.list') || []; } catch (e) { return; }
+  // a bill of mine that is gone from my list was passed on or taken over: sending it again tells us who has it now
+  let check = false;
+  for (const id of before) { const r = LIVE.rows.find(x => x.id === id); if (r && !r.mine) lostCart(id, r.staff_name); else if (!r && LIVE.sent[id]) { LIVE.sent[id] = 'check'; check = true; } }
+  if (check) await liveSync().catch(() => {});
+  renderIncoming();
+  if (S.view === 'live') renderLive();
+}
+setInterval(liveRefresh, 8000);
+function renderIncoming() {
+  const el = $('#incoming'); if (!el) return;
+  const inc = LIVE.rows.filter(r => r.mine && r.state === 'sent');
+  el.hidden = !inc.length;
+  el.innerHTML = inc.map(r => `<div class="inc"><span>📥 <b>${esc(r.from_name || 'Someone')}</b> sent you a bill · ${r.items} item${r.items === 1 ? '' : 's'} · <b class="num">${money(r.total)}</b></span><button type="button" class="btn accent sm" data-take="${esc(r.id)}">Open bill</button></div>`).join('');
+}
+async function takeCart(id) {
+  try {
+    await liveSync();
+    const r = await rpc('carts.take', id);
+    if (S.cart.lines.length) holdBill(true);
+    const c = r.cart || {};
+    S.cart = { ...newCart(c), ...c, id: r.id, lines: (Array.isArray(c.lines) ? c.lines : []).map(l => ({ ...l, rate: l.rate ?? l.price, qty: +l.qty || 1 })) };
+    LIVE.sent[r.id] = 'open' + liveHash(S.cart); LS.set('liveSent', LIVE.sent); LS.set('cart', S.cart);
+    LIVE.rows = LIVE.rows.map(x => x.id === r.id ? { ...x, mine: true, state: 'open' } : x);
+    if (S.view !== 'bill') await show('bill');
+    S.sel = 0; renderCart(); renderIncoming(); focusScan();
+    toast(r.from ? `Bill from ${r.from} — carry on billing` : 'Bill opened');
+  } catch (err) { toast(err.message, { err: true }); liveRefresh(); }
+}
+function chooseStaff(title) {
+  const me = S.auth.user && S.auth.user.id, staff = (S.auth.staff || []).filter(x => x.id !== me);
+  if (!staff.length) { toast('There is nobody else to send it to.', { err: true }); return Promise.resolve(null); }
+  return new Promise(resolve => {
+    const m = openModal(`<h2>${esc(title)}</h2><div class="names pick">${staff.map(x => `<button type="button" data-id="${esc(x.id)}">${esc(x.name)}<small>${x.role === 'owner' ? 'Owner' : 'Staff'}</small></button>`).join('')}</div>
+      <p class="muted small">It appears on their phone or laptop straight away, with an “Open bill” button.</p>
+      <div class="foot"><button type="button" class="btn" data-close>Cancel</button></div>`, { onClose: () => resolve(null) });
+    m.querySelector('.pick').addEventListener('click', e => { const b = e.target.closest('[data-id]'); if (!b) return; m._onClose = null; closeModal(m); resolve(staff.find(x => x.id === b.dataset.id)); });
+  });
+}
+async function transferCart(id, cart) {
+  if (!liveOn()) { toast('Sign in on a linked laptop to send bills to others.', { err: true }); return; }
+  const to = await chooseStaff('Send this bill to');
+  if (!to) return;
+  try {
+    if (cart) { const r = await rpc('carts.put', id, liveCart(cart), 'open'); if (r && r.moved) { lostCart(id, r.to); return; } }
+    const r = await rpc('carts.transfer', id, to.id);
+    delete LIVE.sent[id]; LS.set('liveSent', LIVE.sent);
+    if (S.cart.id === id) { S.cart = newCart(S.cart); LS.set('cart', S.cart); renderCart(); }
+    toast(`Bill sent to ${r.to}.`);
+    liveRefresh();
+  } catch (err) { toast(err.message, { err: true }); }
+}
+function renderLive() {
+  const el = $('#v-live'); if (!el) return;
+  const ago = t => { const m = Math.round((Date.now() - new Date(t)) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
+  const ST = { open: ['chip ok', 'Billing now'], held: ['chip low', 'On hold'], sent: ['chip acc', 'Waiting to be opened'] };
+  const rows = LIVE.rows;
+  el.innerHTML = `<div class="page"><div class="ph"><h1>Live bills</h1><div class="toolbar"><button type="button" class="btn" id="lvRef">Refresh</button></div></div>
+    <p class="muted small" style="margin:0">Bills being made right now on every phone and laptop, updated every few seconds. Click one to see its items, take it over, or send it to someone else.</p>
+    <div class="tablewrap"><table class="grid" id="lvTable">${!rows.length ? '<tbody><tr><td><div class="empty"><b>No bills in progress</b>When anyone starts a bill on a phone or laptop, it shows here.</div></td></tr></tbody>' : `
+      <thead><tr><th>Person</th><th>Where</th><th>Status</th><th>Customer</th><th class="r">Items</th><th class="r">Total</th><th>Last change</th><th></th></tr></thead>
+      <tbody>${rows.map(r => `<tr class="click" data-lv="${esc(r.id)}"><td><b>${esc(r.staff_name)}</b>${r.from_name ? ` <span class="muted small">from ${esc(r.from_name)}</span>` : ''}</td><td>${esc(r.device || '')}</td>
+        <td><span class="${ST[r.state]?.[0] || 'chip'}">${ST[r.state]?.[1] || esc(r.state)}</span></td><td>${esc(r.cart?.customer || '')}</td><td class="r num">${r.items}</td><td class="r num"><b>${money(r.total)}</b></td><td>${ago(r.updated_at)}</td>
+        <td class="r">${r.mine ? '' : `<button type="button" class="btn sm" data-lvtake="${esc(r.id)}">Take over</button>`} <button type="button" class="btn sm" data-lvsend="${esc(r.id)}">Send to…</button></td></tr>
+        ${LIVE.open === r.id ? `<tr><td colspan="8"><div class="muted small">${(r.cart?.lines || []).map(l => `${esc(l.name)} — ${qf(l.qty)} ${esc(l.unit || '')} × ${money(l.rate ?? l.price)}`).join('<br>')}</div></td></tr>` : ''}`).join('')}</tbody>`}</table></div></div>`;
+  $('#lvRef').addEventListener('click', liveRefresh);
+  $('#lvTable').addEventListener('click', e => {
+    const t = e.target.closest('[data-lvtake]'), sd = e.target.closest('[data-lvsend]'), o = e.target.closest('tr[data-lv]');
+    if (t) return takeCart(t.dataset.lvtake);
+    if (sd) return transferCart(sd.dataset.lvsend, null);
+    if (o) { LIVE.open = LIVE.open === o.dataset.lv ? null : o.dataset.lv; renderLive(); }
+  });
 }
 
 /* ================= modals ================= */
@@ -266,9 +391,10 @@ async function show(v) {
   if (v === 'customers' && !(await requirePerm('sales', 'Udhaar accounts are switched off for you'))) return;
   if (v === 'purchases' && !(await requirePerm('edit', 'Purchases need the owner'))) return;
   if (v === 'log' && !(await requirePerm('settings', 'The change log is for the owner'))) return;
+  if (v === 'live') liveRefresh();
   S.view = v;
   $$('#nav [data-view]').forEach(b => b.dataset.view === v ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
-  for (const k of ['bill', 'items', 'sales', 'settings', 'customers', 'purchases', 'log']) $('#v-' + k).hidden = k !== v;
+  for (const k of ['bill', 'items', 'sales', 'settings', 'customers', 'purchases', 'log', 'live']) $('#v-' + k).hidden = k !== v;
   refreshView();
 }
 function refreshView() {
@@ -279,6 +405,7 @@ function refreshView() {
   if (S.view === 'customers') renderCustomers();
   if (S.view === 'purchases') renderPurchases();
   if (S.view === 'log') renderLog();
+  if (S.view === 'live') renderLive();
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && modalOpen()) { e.preventDefault(); closeModal(); return; }
@@ -340,6 +467,7 @@ function buildBill() {
         <div class="seg" role="group" aria-label="Price list" id="modeSeg"><button type="button" data-mode="retail">Retail</button><button type="button" data-mode="wholesale">Wholesale</button></div>
       </div>
       <div class="hintline"><span><kbd>5*</kbd> before a scan = qty 5</span><span><kbd>+</kbd><kbd>−</kbd> change qty</span><span><kbd>Del</kbd> remove line</span><span><kbd>↑</kbd><kbd>↓</kbd> pick line</span><span><kbd>F4</kbd> type qty</span><span><kbd>F6</kbd> retail/wholesale</span><span><kbd>Alt+D</kbd> dozen <kbd>Alt+T</kbd> ten <kbd>Alt+K</kbd> pack</span><span><kbd>Ctrl+H</kbd> hold bill</span><span><kbd>Ctrl+P</kbd> reprint last</span></div>
+      <div class="incoming" id="incoming" hidden></div>
       <div class="heldbar" id="heldBar" hidden></div>
       <div class="quick" id="quick" hidden></div>
       <div class="lines" id="linesWrap"><table class="grid" id="lines"></table></div>
@@ -355,6 +483,8 @@ function buildBill() {
   $('#modeSeg').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (b) setMode(b.dataset.mode); });
   $('#lines').addEventListener('click', onLineClick);
   $('#lines').addEventListener('change', onLineChange);
+  $('#incoming').addEventListener('click', e => { const b = e.target.closest('[data-take]'); if (b) takeCart(b.dataset.take); });
+  renderIncoming();
   $('#heldBar').addEventListener('click', e => {
     const o = e.target.closest('[data-hold]'), x = e.target.closest('[data-hdel]');
     if (o) resumeHeld(+o.dataset.hold);
@@ -509,6 +639,7 @@ function resumeHeld(id) {
   saveHeld(); saveCart(); renderCart(); renderHeld(); focusScan();
 }
 function renderHeld() {
+  scheduleLive();
   const el = $('#heldBar'); if (!el) return;
   el.hidden = !S.held.length;
   el.innerHTML = `<span class="lbl2">On hold:</span>` + S.held.map(h => `<span class="heldchip"><button type="button" data-hold="${h.id}" title="Open this bill">${esc(holdLabel(h.cart))} <span class="muted small">${esc(h.at)}</span></button><button type="button" class="xbtn" data-hdel="${h.id}" aria-label="Delete held bill" title="Delete this held bill">×</button></span>`).join('');
@@ -592,6 +723,7 @@ function renderTotals() {
       <button type="button" class="btn primary big wide" id="savePrint" ${c.lines.length ? '' : 'disabled'}>Save &amp; print <kbd>F9</kbd></button>
       <button type="button" class="btn" id="saveOnly" ${c.lines.length ? '' : 'disabled'}>Save only <kbd>F10</kbd></button>
       <button type="button" class="btn" id="holdB" ${c.lines.length ? '' : 'disabled'}>Hold <kbd>Ctrl+H</kbd></button>
+      ${liveOn() ? `<button type="button" class="btn" id="sendB" ${c.lines.length ? '' : 'disabled'}>Send to…</button>` : ''}
       <button type="button" class="btn" id="clearB" ${c.lines.length ? '' : 'disabled'}>Clear <kbd>Esc</kbd></button>
     </div>
     ${lb ? `<div class="lastbill"><span>Last bill <b>#${esc(lb.bill_no)}</b> · <span class="num">${money(lb.total)}</span></span><span style="display:flex;gap:6px"><button type="button" class="btn" id="waLast" title="Send the bill as a PDF on WhatsApp">WhatsApp <kbd>Alt+W</kbd></button><button type="button" class="btn" id="reprint">Reprint <kbd>Ctrl+P</kbd></button></span></div>` : ''}`;
@@ -614,6 +746,7 @@ function renderTotals() {
   $('#savePrint').addEventListener('click', () => saveBill(true));
   $('#saveOnly').addEventListener('click', () => saveBill(false));
   $('#holdB').addEventListener('click', () => holdBill());
+  $('#sendB')?.addEventListener('click', () => transferCart(c.id, c));
   $('#clearB').addEventListener('click', () => { clearArm = Date.now(); clearBill(); });
   $('#reprint')?.addEventListener('click', reprintLast);
   $('#waLast')?.addEventListener('click', () => S.lastBill && sendWhatsApp(S.lastBill));

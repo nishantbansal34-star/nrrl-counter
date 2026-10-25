@@ -7,6 +7,7 @@ const SUPA = { url: 'https://nbsrlpubmukksdpusxpx.supabase.co', key: 'sb_publish
 const ERR = {
   BAD_PIN: 'Wrong PIN.', LOCKED: 'Too many wrong PINs. Wait 10 minutes.', OWNER_ONLY: 'Only an owner can link a laptop.',
   DEVICE_UNLINKED: 'This laptop was unlinked. Link it again in Settings.', SESSION_EXPIRED: 'Please try again.',
+  CART_GONE: 'That bill was already saved or closed.', CANT_BILL: 'That person can’t make bills (switched off, or blocked).', NO_ACCESS: 'You don’t have access to this.',
 };
 
 async function rpc(fn, args) {
@@ -191,6 +192,12 @@ function createLink(getStore, onChange) {
         if (!ok) throw new Error('Wrong PIN.');
         return cached;
       }
+    },
+    // live bills: called for the person signed in on this laptop
+    cartCall: async (fn, staffId, args) => {
+      const st = getStore(), key = st.getSetting('link_key');
+      if (!key) throw new Error('This laptop is not linked to the phone app.');
+      return rpc(fn, { p_key: key, p_staff: staffId, ...args });
     },
     syncStaff: async () => { const st = getStore(); if (st.getSetting('link_key')) await syncStaff(st, st.getSetting('link_key')); return st.staffList(); },
     unlink() { const st = getStore(); st.setSetting('link_key', ''); st.linkClear(); },

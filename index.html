@@ -241,6 +241,14 @@ html.native-scan .cam video{visibility:hidden}
   .quick button{padding:5px 10px;font-size:.8rem}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+.incoming{display:flex;flex-direction:column;gap:6px;padding:8px max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:#e9e4ff;background:color-mix(in srgb,var(--accent) 14%,var(--surface));border-bottom:1px solid var(--line)}
+.incoming .inc{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:.9rem}
+.sheet .names{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+.sheet .names button{border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:12px;font-weight:700;text-align:left;display:flex;flex-direction:column;color:var(--fg)}
+.sheet .names small{font-weight:500;color:var(--muted)}
+.chip.ok{background:rgba(31,138,76,.15);background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
+.paybar .opts{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.paybar .opts::-webkit-scrollbar{display:none}.paybar .opts>*{flex:none}
 </style>
 </head>
 <body>

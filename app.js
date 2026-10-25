@@ -46,6 +46,8 @@ const ERR = {
   UNKNOWN_ITEM: 'An item on this bill was removed from the item list. Remove it and try again.',
   PIN_FORMAT: 'PIN must be 4 to 8 digits.',
   CANT_DEMOTE_SELF: 'You can’t remove your own owner access.',
+  CART_GONE: 'That bill was already saved or closed.',
+  CANT_BILL: 'That person can’t make bills (switched off, or blocked).',
   NO_ACCESS: 'You don’t have access to this. Ask the owner.',
   'Request timed out': 'The internet is too slow right now. Try again.',
 };
@@ -97,7 +99,7 @@ const PERMS = [
 ];
 const PERM_DEF = { bill: true, rate: false, stock: true, add: true, edit: false, sales: true, reports: false, cancel: false, labels: true, settings: false };
 const can = k => isOwner() || !!((S.me?.perms && k in S.me.perms) ? S.me.perms[k] : PERM_DEF[k]);
-function saveCart() { LS.set('cart', S.cart); }
+function saveCart() { LS.set('cart', S.cart); scheduleLive(); }
 (LS.get('items', []) || []).forEach(i => S.items.set(i.code, i));
 
 /* Item list: the whole list at start and every 10 minutes; in between only what changed (much less mobile data
@@ -368,11 +370,131 @@ const Native = (() => {
   return { available, reset, start, stop, setZoom, torch, torchAvail, get active() { return on; }, get zoom() { return zoom; }, get zoomMax() { return zoomMax; } };
 })();
 
+/* ---------------- live bills ----------------
+   Every open bill (and every bill on hold) is kept on the server while it is being made, so it can be passed to
+   another person, and the owner can see all of them as they happen. */
+const LIVE = { sent: LS.get('liveSent', {}), rows: [], busy: false, t: 0 };
+const liveHash = c => JSON.stringify([c.lines, c.discount, c.customer, c.phone, c.mode, c.payment]);
+function scheduleLive() { clearTimeout(LIVE.t); LIVE.t = setTimeout(() => liveSync().catch(() => {}), 1200); }
+async function liveSync() {
+  if (!S.token || LIVE.busy) return;
+  LIVE.busy = true;
+  try {
+    const want = {};
+    if (S.cart.lines.length) want[S.cart.id] = { cart: S.cart, state: 'open' };
+    for (const h of S.held || []) if (h.cart.lines.length) want[h.cart.id] = { cart: h.cart, state: 'held' };
+    for (const [id, w] of Object.entries(want)) {
+      const hash = w.state + liveHash(w.cart);
+      if (LIVE.sent[id] === hash) continue;
+      const r = await api('counter_cart_put', { p_token: S.token, p_id: id, p_cart: w.cart, p_state: w.state, p_device: 'Phone' });
+      if (r && r.moved) { lostCart(id, r.to); continue; }
+      LIVE.sent[id] = hash;
+    }
+    for (const id of Object.keys(LIVE.sent)) {
+      if (want[id]) continue;
+      await api('counter_cart_close', { p_token: S.token, p_id: id }).catch(e => { if (e.net) throw e; });
+      delete LIVE.sent[id];
+    }
+  } catch (e) { /* offline: tried again on the next change or refresh */ }
+  finally { LS.set('liveSent', LIVE.sent); LIVE.busy = false; }
+}
+// a bill that was passed on, or taken over by the owner, leaves this phone
+function lostCart(id, to) {
+  delete LIVE.sent[id];
+  if (S.cart.id === id) { S.cart = freshCart(S.cart); LS.set('cart', S.cart); renderCart(); toast(`This bill is now with ${to}.`, true); }
+  const n = (S.held || []).length; S.held = (S.held || []).filter(h => h.cart.id !== id);
+  if (S.held.length !== n) { LS.set('held', S.held); renderHeld(); toast(`A held bill is now with ${to}.`, true); }
+}
+async function liveRefresh() {
+  if (!S.token || document.hidden || LIVE.refreshing) return;
+  LIVE.refreshing = true;
+  try { await liveRefreshNow(); } finally { LIVE.refreshing = false; }
+}
+async function liveRefreshNow() {
+  await liveSync().catch(() => {});
+  const before = Object.keys(LIVE.sent);
+  try { LIVE.rows = await api('counter_carts', { p_token: S.token }) || []; } catch (e) { return; }
+  // a bill of mine that is gone from my list was passed on or taken over: sending it again tells us who has it now
+  let check = false;
+  for (const id of before) { const r = LIVE.rows.find(x => x.id === id); if (r && !r.mine) lostCart(id, r.staff_name); else if (!r && LIVE.sent[id]) { LIVE.sent[id] = 'check'; check = true; } }
+  if (check) await liveSync().catch(() => {});
+  renderIncoming();
+  if (S.view === 'live') renderLive();
+}
+setInterval(liveRefresh, 8000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) liveRefresh(); });
+function lineTotal(c) { return c.lines.reduce((a, l) => a + (+l.price || +l.rate || 0) * l.qty, 0) - (+c.discount || 0); }
+function renderIncoming() {
+  const el = $('#incoming'); if (!el) return;
+  const inc = LIVE.rows.filter(r => r.mine && r.state === 'sent');
+  el.hidden = !inc.length;
+  el.innerHTML = inc.map(r => `<div class="inc"><span>📥 <b>${esc(r.from_name || 'Someone')}</b> sent you a bill · ${r.items} item${r.items === 1 ? '' : 's'} · ${money(r.total)}</span><button class="btn sm primary" type="button" data-take="${esc(r.id)}">Open</button></div>`).join('');
+}
+async function takeCart(id) {
+  try {
+    await liveSync();
+    const r = await api('counter_cart_take', { p_token: S.token, p_id: id, p_device: 'Phone' });
+    if (S.cart.lines.length) { S.held.push({ id: Date.now(), at: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }), cart: S.cart }); LS.set('held', S.held); toast('Your current bill was put on hold'); }
+    const c = r.cart || {};
+    S.cart = { ...freshCart(c), ...c, id: r.id, lines: Array.isArray(c.lines) ? c.lines : [] };
+    LIVE.sent[r.id] = 'open' + liveHash(S.cart); LS.set('liveSent', LIVE.sent);
+    LS.set('cart', S.cart);
+    LIVE.rows = LIVE.rows.map(x => x.id === r.id ? { ...x, mine: true, state: 'open' } : x);
+    if (S.view !== 'bill') show('bill');
+    renderCart(); renderIncoming();
+    toast(r.from ? `Bill from ${r.from} — carry on billing` : 'Bill opened');
+  } catch (e) { toast(e.message, true); liveRefresh(); }
+}
+async function chooseStaff(title, exceptId) {
+  let staff = []; try { staff = await api('counter_staff_list'); } catch (e) { staff = LS.get('staff', []); }
+  staff = staff.filter(x => x.id !== exceptId);
+  if (!staff.length) { toast('There is nobody else to send it to.', true); return null; }
+  return new Promise(resolve => {
+    const d = openSheet('pickSheet', `<h3>${esc(title)}</h3><div class="names" style="margin-top:10px">${staff.map(x => `<button type="button" data-id="${esc(x.id)}">${esc(x.name)}<small>${x.role === 'owner' ? 'Owner' : 'Staff'}</small></button>`).join('')}</div>
+      <div class="acts2"><button class="btn w" type="button" id="pkCancel">Cancel</button></div>`, () => resolve(null));
+    $('#pkCancel', d).addEventListener('click', closeSheet);
+    $('.names', d).addEventListener('click', e => { const b = e.target.closest('[data-id]'); if (!b) return; d._onClose = null; closeSheet(); resolve(staff.find(x => x.id === b.dataset.id)); });
+  });
+}
+async function transferCart(id, cart) {
+  const to = await chooseStaff('Send this bill to', S.me.id);
+  if (!to) return;
+  try {
+    if (cart) { const r = await api('counter_cart_put', { p_token: S.token, p_id: id, p_cart: cart, p_state: 'open', p_device: 'Phone' }); if (r && r.moved) { lostCart(id, r.to); return; } }
+    const r = await api('counter_cart_transfer', { p_token: S.token, p_id: id, p_to: to.id });
+    delete LIVE.sent[id]; LS.set('liveSent', LIVE.sent);
+    if (S.cart.id === id) { S.cart = freshCart(S.cart); LS.set('cart', S.cart); renderCart(); }
+    toast(`Bill sent to ${r.to}. It shows on their phone or laptop.`);
+    liveRefresh();
+  } catch (e) { toast(e.net ? 'No internet — the bill can be sent once the connection is back.' : e.message, true); }
+}
+/* Owner: every bill being made right now, on every phone and laptop */
+function renderLive() {
+  const el = $('#v-live'); if (!el) return;
+  const rows = LIVE.rows, ago = t => { const m = Math.round((Date.now() - new Date(t)) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
+  const ST = { open: ['chip ok', 'Billing now'], held: ['chip low', 'On hold'], sent: ['chip acc', 'Waiting to be opened'] };
+  el.innerHTML = `<div class="page"><div class="ph"><h2>Live bills</h2><button class="btn sm" id="lvRef">Refresh</button></div>
+    <p class="hint" style="margin:-4px 0 12px">Bills being made right now on every phone and laptop. Updates every few seconds.</p>
+    <ul class="list">${rows.length ? rows.map(r => `<li><button class="row" type="button" data-lv="${esc(r.id)}"><span class="nm">${esc(r.staff_name)} <small class="hint">· ${esc(r.device || '')}</small></span>
+      <span class="rt"><b class="num">${money(r.total)}</b></span><span class="meta"><span class="${ST[r.state]?.[0] || 'chip'}">${ST[r.state]?.[1] || r.state}</span><span>${r.items} item${r.items === 1 ? '' : 's'}</span>${r.cart?.customer ? `<span>${esc(r.cart.customer)}</span>` : ''}${r.from_name ? `<span>from ${esc(r.from_name)}</span>` : ''}<span>${ago(r.updated_at)}</span></span></button>
+      ${LIVE.open === r.id ? `<div class="detail"><table>${(r.cart?.lines || []).map(l => `<tr><td>${esc(l.name)}<div class="hint">${l.qty} ${esc(l.unit || '')} × ${money(+l.price || +l.rate || 0)}</div></td><td>${money((+l.price || +l.rate || 0) * l.qty)}</td></tr>`).join('')}</table>
+        <div class="acts">${r.mine ? '' : `<button class="btn sm primary" type="button" data-lvtake="${esc(r.id)}">Take over</button>`}<button class="btn sm" type="button" data-lvsend="${esc(r.id)}">Send to…</button></div></div>` : ''}</li>`).join('')
+      : '<li class="empty"><b>No bills in progress</b>When anyone starts a bill on a phone or laptop, it shows here.</li>'}</ul></div>`;
+  $('#lvRef').addEventListener('click', liveRefresh);
+  el.querySelector('.list').addEventListener('click', e => {
+    const t = e.target.closest('[data-lvtake]'), sd = e.target.closest('[data-lvsend]'), o = e.target.closest('[data-lv]');
+    if (t) return takeCart(t.dataset.lvtake);
+    if (sd) return transferCart(sd.dataset.lvsend, null);
+    if (o) { LIVE.open = LIVE.open === o.dataset.lv ? null : o.dataset.lv; renderLive(); }
+  });
+}
+
 /* ---------------- shell ---------------- */
 const ICON = {
   bill: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/>',
   items: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
   bills: '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>',
+  live: '<circle cx="12" cy="12" r="3"/><path d="M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7"/>',
   staff: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c2 .8 3.2 2.5 3.6 5.2"/>',
 };
 const svg = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -448,6 +570,11 @@ async function doLogin() {
 }
 async function logout(expired) {
   const t = S.token;
+  // the open bill stays on this phone for whoever logs in next: take it off this person's live list first
+  if (t && !expired) for (const id of Object.keys(LIVE.sent)) await api('counter_cart_close', { p_token: t, p_id: id }).catch(() => {});
+  LIVE.sent = {}; LIVE.rows = []; LS.set('liveSent', {});
+  S.cart.id = uid(); LS.set('cart', S.cart);
+  (S.held || []).forEach(h => { h.cart.id = uid(); }); LS.set('held', S.held || []);
   S.token = null; S.me = null; LS.del('token'); LS.del('me');
   if (t && !expired) api('counter_logout', { p_token: t }).catch(() => {});
   loginStaff = null;
@@ -460,7 +587,7 @@ let installEvt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; const b = $('#installBtn'); if (b) b.hidden = false; });
 function showApp(view) {
   Native.stop(); Scanner.stop();
-  const tabs = [['bill', 'Bill']].concat(can('sales') ? [['bills', 'Sales']] : [], [['items', 'Items']], isOwner() ? [['staff', 'Staff']] : []);
+  const tabs = [['bill', 'Bill']].concat(isOwner() ? [['live', 'Live']] : [], can('sales') ? [['bills', 'Sales']] : [], [['items', 'Items']], isOwner() ? [['staff', 'Staff']] : []);
   $('#app').innerHTML = `
     <header class="topbar"><h1>NRRL Counter</h1>
       <div class="who"><button class="themebtn" id="themeBtn" type="button"></button><button class="btn sm" id="installBtn" hidden>Install app</button><span class="net${netOk ? '' : ' off'}" id="net"></span><b id="whoName"></b><button class="btn sm" id="logoutBtn">Log out</button></div></header>
@@ -470,6 +597,7 @@ function showApp(view) {
       <section id="v-bills" hidden></section>
       <section id="v-items" hidden></section>
       <section id="v-staff" hidden></section>
+      <section id="v-live" hidden></section>
     </main>
     <nav class="tabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}">${svg(ICON[k === 'bills' ? 'bills' : k])}${l}</button>`).join('')}</nav>`;
   renderWho();
@@ -490,16 +618,18 @@ function showApp(view) {
   show(tabs.some(t => t[0] === view) ? view : 'bill');
   loadItems(true);
   syncPending();
+  liveRefresh();
 }
 function renderWho() { const w = $('#whoName'); if (w && S.me) w.textContent = S.me.name + (isOwner() ? ' · Owner' : ''); }
 function show(v) {
   S.view = v;
   $$('nav.tabs [data-tab]').forEach(b => b.dataset.tab === v ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
-  ['bill', 'bills', 'items', 'staff'].forEach(k => { const el = $('#v-' + k); if (el) el.hidden = k !== v; });
+  ['bill', 'bills', 'items', 'staff', 'live'].forEach(k => { const el = $('#v-' + k); if (el) el.hidden = k !== v; });
   if (v === 'bill' && can('bill')) startCam(); else { Scanner.stop(); Native.stop(); }
   if (v === 'bills') renderBills(true);
   if (v === 'items') { renderItems(); loadItems(true); }
   if (v === 'staff') renderStaff();
+  if (v === 'live') { renderLive(); liveRefresh(); }
 }
 document.addEventListener('visibilitychange', () => {
   if (!S.token) return;
@@ -524,6 +654,7 @@ function buildBill() {
     </div>
     <div class="quick" id="quick" hidden aria-label="Often sold"></div>
     <ul class="results" id="results"></ul>
+    <div class="incoming" id="incoming" hidden></div>
     <div class="heldbar" id="heldBar" hidden></div>
     <ul class="lines" id="lines"></ul>
     <div class="paybar" id="paybar"></div>`;
@@ -679,6 +810,7 @@ function renderCart(fresh) {
       <div class="seg" role="group" aria-label="Payment">${['cash', 'upi', 'udhaar'].map(p => `<button type="button" data-pay="${p}" aria-pressed="${c.payment === p}">${p === 'upi' ? 'UPI' : p === 'cash' ? 'Cash' : 'Udhaar'}</button>`).join('')}</div>
       ${own ? `<label class="sub" for="disc" style="margin-left:auto">Disc ₹</label><input type="number" inputmode="decimal" id="disc" value="${c.discount || ''}" placeholder="0">` : '<span style="margin-left:auto"></span>'}
       <button class="btn sm" type="button" id="holdBtn" ${c.lines.length ? '' : 'disabled'}>Hold</button>
+      <button class="btn sm" type="button" id="sendBtn" ${c.lines.length ? '' : 'disabled'}>Send to…</button>
       <button class="btn sm" type="button" id="custBtn" aria-expanded="${!!(c.customer || c.phone || c.payment === 'udhaar')}">${c.customer ? esc(c.customer) : 'Customer'}</button>
     </div>
     <div class="more" id="custFields" ${c.customer || c.phone || c.payment === 'udhaar' ? '' : 'hidden'}>
@@ -689,6 +821,9 @@ function renderCart(fresh) {
   $('#paybar .seg').addEventListener('click', e => { const b = e.target.closest('[data-pay]'); if (!b) return; c.payment = b.dataset.pay; saveCart(); renderCart(); });
   $('#disc')?.addEventListener('change', e => { c.discount = Math.max(0, r2(e.target.value)); saveCart(); renderCart(); });
   $('#holdBtn').addEventListener('click', holdBill);
+  $('#sendBtn').addEventListener('click', () => transferCart(c.id, c));
+  if (!$('#incoming')._wired) { $('#incoming')._wired = true; $('#incoming').addEventListener('click', e => { const b = e.target.closest('[data-take]'); if (b) takeCart(b.dataset.take); }); }
+  renderIncoming();
   renderHeld();
   $('#custBtn').addEventListener('click', () => { const f = $('#custFields'); f.hidden = !f.hidden; if (!f.hidden) $('#cName').focus(); });
   $('#cName').addEventListener('input', e => { c.customer = e.target.value; saveCart(); });
@@ -712,6 +847,7 @@ function holdBill() {
   S.cart = freshCart(S.cart); saveCart(); renderCart();
 }
 function renderHeld() {
+  scheduleLive();
   const el = $('#heldBar'); if (!el) return;
   el.hidden = !S.held.length;
   el.innerHTML = '<span class="lbl">On hold</span>' + S.held.map(h => `<span class="hchip"><button type="button" data-hold="${h.id}">${esc(holdText(h.cart))} <small>${esc(h.at)}</small></button><button type="button" class="hx" data-hdel="${h.id}" aria-label="Delete held bill">×</button></span>`).join('');

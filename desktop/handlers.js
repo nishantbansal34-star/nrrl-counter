@@ -29,7 +29,14 @@ function makeHandlers(ctx) {
   const deny = k => { if (!can(k)) throw new Error('You don’t have access to this. Ask the owner.'); };
   const who = () => user ? user.name + (user.role !== 'owner' && Date.now() < ownerUntil ? ' (owner PIN)' : '') : (Date.now() < ownerUntil ? 'Owner (PIN)' : 'Counter');
   const range = (from, to) => st()._range(from, to);
+  const live = (fn, args) => { if (!user || !ctx.link || !ctx.link.cartCall) throw new Error('Sign in first.'); return ctx.link.cartCall(fn, user.id, args); };
   const H = {
+    // live bills (laptop linked + someone signed in): open bills on the server so they can be passed on and the owner sees them
+    'carts.put': (id, cart, state) => live('counter_dev_cart_put', { p_id: id, p_cart: cart, p_state: state, p_device: 'Laptop ' + (st().getSetting('link_code') || '') }),
+    'carts.close': id => live('counter_dev_cart_close', { p_id: id }),
+    'carts.list': () => live('counter_dev_carts', {}),
+    'carts.transfer': (id, to) => live('counter_dev_cart_transfer', { p_id: id, p_to: to }),
+    'carts.take': id => live('counter_dev_cart_take', { p_id: id, p_device: 'Laptop ' + (st().getSetting('link_code') || '') }),
     'customers.list': q => st().customers(q),
     'customers.get': id => st().customer(id),
     'customers.find': (name, phone) => st().customerFind(name, phone),
