@@ -198,8 +198,8 @@ const Scanner = (() => {
     const now = performance.now();
     const prev = seen.get(code) || 0;
     seen.set(code, now);
-    // A code counts again only after it has left the camera view for a moment.
-    if (now - prev > 750) onCode && onCode(code);
+    // A code counts again once it has been out of view briefly (a quick away-and-back is enough).
+    if (now - prev > REPEAT_GAP) onCode && onCode(code);
   }
   async function tick() {
     if (!running) return;
@@ -306,6 +306,7 @@ const Scanner = (() => {
    the page, and it handles small, tilted or slightly blurry labels. The camera picture sits behind
    the page; the page is see-through only inside the scan window. Only barcodes inside that window count,
    so other labels on the shelf around the item are ignored. */
+const REPEAT_GAP = 400; // ms a barcode must be out of view before the same code counts again
 const Native = (() => {
   const B = () => window.NrrlNative && window.NrrlNative.native && window.NrrlNative.BarcodeScanner;
   let on = false, starting = null, listener = null, onCode = null, rectFn = null, zoomMax = 1, zoom = 1, torchOn = false;
@@ -322,8 +323,10 @@ const Native = (() => {
     if (!r || !bc.cornerPoints || bc.cornerPoints.length < 4) return true;
     const dpr = window.devicePixelRatio || 1;
     const cx = bc.cornerPoints.reduce((a, p) => a + p[0], 0) / 4 / dpr, cy = bc.cornerPoints.reduce((a, p) => a + p[1], 0) / 4 / dpr;
-    const mx = r.width * 0.12, my = r.height * 0.2 + 30; // allow a little slack for the status bar
-    return cx >= r.left - mx && cx <= r.right + mx && cy >= r.top - my && cy <= r.bottom + my;
+    // only the box itself counts, so moving the label just out of the box is enough to count it again
+    // (the camera picture is measured from the top of the screen, the page from below the status bar: a little extra slack below)
+    const mx = r.width * 0.04;
+    return cx >= r.left - mx && cx <= r.right + mx && cy >= r.top - 12 && cy <= r.bottom + 36;
   }
   async function start(cb, rect) {
     onCode = cb; rectFn = rect;
@@ -338,7 +341,7 @@ const Native = (() => {
         const bc = ev && ev.barcode; if (!bc || !onCode) return;
         const code = String(bc.rawValue || bc.displayValue || '').trim(); if (!code || !inside(bc)) return;
         const now = performance.now(), prev = seen.get(code) || 0; seen.set(code, now);
-        if (now - prev > 750) onCode(code); // counts again only after leaving the window for a moment
+        if (now - prev > REPEAT_GAP) onCode(code); // counts again after a quick move out of the box and back
       });
       document.documentElement.classList.add('native-scan');
       await b.startScan({ formats: ['EAN_13', 'EAN_8', 'UPC_A', 'UPC_E', 'CODE_128', 'CODE_39', 'ITF', 'QR_CODE'] });
@@ -646,6 +649,7 @@ function buildBill() {
       <div class="aim"></div>
       <div class="camtools"><button type="button" id="zoomBtn" hidden>2×</button><button type="button" id="camBtn" hidden>Switch</button><button type="button" id="torchBtn" aria-pressed="false" hidden>Light</button><button type="button" id="engBtn" hidden></button></div>
       <div class="flash" id="flash">Point at a barcode or QR code</div>
+      <button type="button" class="again" id="againBtn" hidden aria-label="Add one more of the last item">+1</button>
       <div class="off" id="camOff" hidden><span id="camMsg">Camera is off</span><button type="button" class="btn" id="camOn">Start camera</button></div>
     </div>
     <div class="billtools">
@@ -659,6 +663,7 @@ function buildBill() {
     <ul class="lines" id="lines"></ul>
     <div class="paybar" id="paybar"></div>`;
   $('#camOn').addEventListener('click', startCam);
+  $('#againBtn').addEventListener('click', () => { const it = S.items.get(S.lastAdded); if (it) addItem(it); });
   $('#engBtn').addEventListener('click', async () => {
     const basic = LS.get('scanEngine', 'fast') === 'basic';
     LS.set('scanEngine', basic ? 'fast' : 'basic');
@@ -766,7 +771,14 @@ function addItem(it, qty = 1) {
   else { l = { code: it.code, name: it.name, unit: unitFor(it), gst: it.gst, price: priceFor(it), qty }; c.lines.unshift(l); }
   saveCart(); renderCart(true); bumpFreq(it.code);
   beep(true); flash('hit', `✓ ${it.name} · ${l.qty} ${l.unit}`);
+  S.lastAdded = it.code; showAgain();
   if (it.stock != null && it.stock - l.qty < 0) toast(`${it.name}: stock shows ${it.stock} left`, true);
+}
+// big "+1" on the camera: one more of the item just scanned, without scanning it again
+function showAgain() {
+  const ag = $('#againBtn'); if (!ag) return;
+  const on = !!S.lastAdded && S.cart.lines.some(l => l.code === S.lastAdded);
+  ag.hidden = !on; $('#cam').classList.toggle('again-on', on);
 }
 function setMode(m) {
   S.cart.mode = m;
@@ -787,6 +799,7 @@ function renderCart(fresh) {
   const c = S.cart, own = can('rate');
   if (!$('#lines')) return;
   $('#v-bill').classList.toggle('has-lines', c.lines.length > 0);
+  showAgain();
   if (!own && c.discount) c.discount = 0;
   $$('.billtools [data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === c.mode));
   const ul = $('#lines');

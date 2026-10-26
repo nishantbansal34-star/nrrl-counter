@@ -37,6 +37,22 @@ jobs:
         run: |
           npm init -y >/dev/null
           npm install @capacitor/core@6.2.0 @capacitor/cli@6.2.0 @capacitor/android@6.2.0 @capacitor-mlkit/barcode-scanning@6.2.0 @capacitor/filesystem@6.0.3 @capacitor/share@6.0.3 jspdf@2.5.2 esbuild@0.24.0
+          # faster scanning: the plugin waits for the same code in 10 camera frames before reporting it (up to 1-2 s on
+          # older phones) and looks at a small 640x480 picture (small labels hard to read). Report after 3 frames and
+          # look at a 720p picture instead.
+          python3 - <<'PY'
+          p = 'node_modules/@capacitor-mlkit/barcode-scanning/android/src/main/java/io/capawesome/capacitorjs/plugins/mlkit/barcodescanning/BarcodeScanner.java'
+          s = open(p).read()
+          a = 'if (votes >= 10) {'
+          assert s.count(a) == 1, 'votes line changed'
+          s = s.replace(a, 'if (votes >= 3) {')
+          a = 'new ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)'
+          assert s.count(a) == 1, 'analysis line changed'
+          s = s.replace(a, a + '.setTargetResolution(new android.util.Size(720, 1280))')
+          open(p, 'w').write(s)
+          print('patched ML Kit scanner')
+          PY
+          grep -n "votes >= \|setTargetResolution" node_modules/@capacitor-mlkit/barcode-scanning/android/src/main/java/io/capawesome/capacitorjs/plugins/mlkit/barcodescanning/BarcodeScanner.java
           # fast native barcode scanner (Google ML Kit) for the page
           cp ../native/entry.js native-entry.js; cp ../native/pdf-entry.js pdf-entry.js
           # target older Android WebViews too (Android 7+ with Chrome 61+): newer syntax is rewritten
