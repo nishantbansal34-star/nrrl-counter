@@ -102,7 +102,7 @@ class Store {
       create table if not exists items(
         code text primary key, name text not null,
         retail real not null default 0, wholesale real not null default 0, cost real not null default 0,
-        stock real, min_stock real, unit text not null default 'pcs', gst real not null default 18, hsn text not null default '',
+        stock real, min_stock real, unit text not null default 'pcs', gst real not null default 0, hsn text not null default '',
         active integer not null default 1, created_at text, updated_at text);
       create table if not exists bills(
         id integer primary key autoincrement, bill_no text not null unique, created_at text not null,
@@ -284,7 +284,7 @@ class Store {
     if (!name) throw new Error('Add the item name.');
     const retail = r2(it.retail);
     if (!(retail > 0)) throw new Error('Retail price must be more than ₹0.');
-    const gst = [0, 0.25, 3, 5, 12, 18, 28, 40].includes(+it.gst) ? +it.gst : (isFinite(+it.gst) && it.gst !== '' && it.gst != null ? r2(it.gst) : 18);
+    const gst = [0, 0.25, 3, 5, 12, 18, 28, 40].includes(+it.gst) ? +it.gst : (isFinite(+it.gst) && it.gst !== '' && it.gst != null ? r2(it.gst) : 0);
     return {
       code, name, retail, wholesale: Math.max(0, r2(it.wholesale)), cost: Math.max(0, r2(it.cost)),
       stock: numOrNull(it.stock), min_stock: numOrNull(it.min_stock),

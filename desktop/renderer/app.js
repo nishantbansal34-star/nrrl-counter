@@ -845,7 +845,7 @@ async function openItemForm(it, opts = {}) {
       <label class="f" id="fWQtyWrap"><span id="fWQtyLbl">Retail units in one wholesale unit</span><input type="number" step="any" id="fWQty" value="${it?.wholesale_qty && it.wholesale_qty !== 1 ? it.wholesale_qty : ''}" placeholder="e.g. 12"></label>
       <label class="f"><span>Stock in hand</span><input type="number" step="any" id="fStock" value="${it?.stock ?? ''}" placeholder="Blank = don’t track"></label>
       <label class="f"><span>Retail rate is per</span><select id="fUnit">${(units.includes(unit) ? units : [unit, ...units]).map(u => `<option${u === unit ? ' selected' : ''}>${esc(u)}</option>`).join('')}</select></label>
-      <label class="f"><span>GST %</span><select id="fGst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}"${(it?.gst ?? 18) == g ? ' selected' : ''}>${g}%</option>`).join('')}</select></label>
+      <label class="f"><span>GST %</span><select id="fGst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}"${(it?.gst ?? 0) == g ? ' selected' : ''}>${g}%</option>`).join('')}</select></label>
       <label class="f"><span>HSN code</span><input type="text" id="fHsn" value="${esc(it?.hsn ?? '')}" placeholder="Optional"></label>
       <label class="f"><span>Purchase price ₹</span><input type="number" step="any" id="fCost" value="${it?.cost || ''}" placeholder="Optional, for your reference"></label>
       <label class="f"><span>Low-stock alert at</span><input type="number" step="any" id="fMin" value="${it?.min_stock ?? ''}" placeholder="Default ${esc(S.settings.low_stock || 5)}"></label>
@@ -1208,7 +1208,7 @@ function rowsToItems(rows) {
   return rows.map(r => ({
     code: r[map.code] ?? '', name: r[map.name] ?? '', retail: num(r[map.retail]), wholesale: num(r[map.wholesale]), cost: num(r[map.cost]),
     stock: map.stock != null ? num(r[map.stock]) : '', unit: (r[map.unit] || 'pcs').toLowerCase(),
-    wholesale_unit: map.wholesale_unit != null ? String(r[map.wholesale_unit] || '').toLowerCase() : '', wholesale_qty: map.wholesale_qty != null ? num(r[map.wholesale_qty]) || 1 : 1, gst: map.gst != null && r[map.gst] !== '' ? num(r[map.gst]) : 18, hsn: r[map.hsn] ?? '',
+    wholesale_unit: map.wholesale_unit != null ? String(r[map.wholesale_unit] || '').toLowerCase() : '', wholesale_qty: map.wholesale_qty != null ? num(r[map.wholesale_qty]) || 1 : 1, gst: map.gst != null && r[map.gst] !== '' ? num(r[map.gst]) : 0, hsn: r[map.hsn] ?? '',
   }));
 }
 async function importCsv() {
