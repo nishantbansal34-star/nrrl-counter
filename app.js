@@ -95,7 +95,7 @@ const isOwner = () => S.me?.role === 'owner';
 const PERMS = [
   ['bill', 'Make bills'], ['rate', 'Change rates & give discount'], ['stock', 'See stock'], ['add', 'Add new items'],
   ['edit', 'Edit items, prices & stock'], ['sales', 'See today’s sales'], ['reports', 'See older sales & totals'],
-  ['cancel', 'Cancel bills'], ['labels', 'Print labels (laptop)'], ['settings', 'Laptop settings'],
+  ['cancel', 'Cancel bills'], ['labels', 'Print labels'], ['settings', 'Laptop settings'],
 ];
 const PERM_DEF = { bill: true, rate: false, stock: true, add: true, edit: false, sales: true, reports: false, cancel: false, labels: true, settings: false };
 const can = k => isOwner() || !!((S.me?.perms && k in S.me.perms) ? S.me.perms[k] : PERM_DEF[k]);
@@ -1097,6 +1097,129 @@ async function sharePdf(b) {
 }
 function waLink(b) { let p = String(b.phone || '').replace(/\D/g, ''); if (p.length === 10) p = '91' + p; return 'https://wa.me/' + p + '?text=' + encodeURIComponent(billText(b)); }
 
+/* ---------------- barcodes and labels ----------------
+   Code 128 (what the laptop prints for NR… codes). Bars are drawn as whole printer dots
+   (8 dots per mm, the usual 203 dpi label printer), so the label scans first time. */
+const C128 = ['212222','222122','222221','121223','121322','131222','122213','122312','132212','221213','221312','231212','112232','122132','122231','113222','123122','123221','223211','221132','221231','213212','223112','312131','311222','321122','321221','312212','322112','322211','212123','212321','232121','111323','131123','131321','112313','132113','132311','211313','231113','231311','112133','112331','132131','113123','113321','133121','313121','211331','231131','213113','213311','213131','311123','311321','331121','312113','312311','332111','314111','221411','431111','111224','111422','121124','121421','141122','141221','112214','112412','122114','122411','142112','142211','241211','221114','413111','241112','134111','111242','121142','121241','114212','124112','124211','411212','421112','421211','212141','214121','412121','111143','111341','131141','114113','114311','411113','411311','113141','114131','311141','411131','211412','211214','211232','2331112'];
+// bars as [start, width] in modules (quiet zones not included); null when the code can't be a Code 128
+function code128(text) {
+  text = String(text || '');
+  if (!text || /[^\x20-\x7e]/.test(text)) return null;
+  let vals;
+  if (/^\d+$/.test(text) && text.length % 2 === 0 && text.length >= 4) { vals = [105]; for (let i = 0; i < text.length; i += 2) vals.push(+text.substr(i, 2)); }
+  else { vals = [104]; for (const ch of text) vals.push(ch.charCodeAt(0) - 32); }
+  let sum = vals[0]; for (let i = 1; i < vals.length; i++) sum += vals[i] * i;
+  vals.push(sum % 103, 106);
+  const bars = []; let x = 0;
+  for (const v of vals) { const p = C128[v]; for (let i = 0; i < p.length; i++) { const w = +p[i]; if (i % 2 === 0) bars.push([x, w]); x += w; } }
+  return { bars, modules: x };
+}
+function barcodeSvg(text, h = 56) {
+  const c = code128(text); if (!c) return '';
+  const q = 10, W = c.modules + 2 * q;
+  return `<svg viewBox="0 0 ${W} ${h}" preserveAspectRatio="none" role="img" aria-label="Barcode ${esc(text)}"><rect width="${W}" height="${h}" fill="#fff"/>${c.bars.map(([x, w]) => `<rect x="${x + q}" y="0" width="${w}" height="${h}" fill="#000"/>`).join('')}</svg>`;
+}
+const LABEL_SIZES = { '50x25': [50, 25], '38x25': [38, 25], '100x50': [100, 50] };
+const DOT = 8; // printer dots per mm (203 dpi)
+// one label as a black-and-white picture, exactly the label's size in printer dots
+function labelCanvas(it, size) {
+  const [wmm, hmm] = LABEL_SIZES[size] || LABEL_SIZES['50x25'];
+  const W = wmm * DOT, H = hmm * DOT, k = hmm / 25; // text scales with the label height
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.fillStyle = '#000'; g.textBaseline = 'top';
+  const pad = Math.round(1.5 * DOT);
+  const fit = (t, px, weight, maxW) => { let f = px; do { g.font = `${weight} ${f}px Inter, Roboto, Arial, sans-serif`; if (g.measureText(t).width <= maxW) break; f--; } while (f > 10); return f; };
+  // name: up to two lines
+  const namePx = Math.round(2.6 * DOT * k);
+  g.font = `700 ${namePx}px Inter, Roboto, Arial, sans-serif`;
+  const words = String(it.name || '').split(/\s+/); const lines = []; let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width <= W - 2 * pad || !cur) cur = t; else { lines.push(cur); cur = w; } }
+  if (cur) lines.push(cur);
+  let y = Math.round(1.2 * DOT);
+  const twoLines = lines.length > 1 && hmm >= 30;
+  const shown = twoLines ? lines.slice(0, 2) : [lines.join(' ')];
+  for (const ln of shown) { fit(ln, namePx, 700, W - 2 * pad); g.fillText(ln, pad, y); y += namePx + 2; }
+  // rate
+  const ratePx = Math.round(3.8 * DOT * k);
+  const rate = '₹' + (Math.round(it.retail * 100) / 100) + '/' + ({ pcs: 'pc', dozen: 'doz' }[it.unit] || it.unit || 'pc');
+  fit(rate, ratePx, 800, W - 2 * pad); g.fillText(rate, pad, y); y += ratePx + Math.round(0.8 * DOT * k);
+  // barcode: widest whole-dot module that fits, at least 2 dots
+  const c = code128(it.code);
+  const codePx = Math.round(2.2 * DOT * k);
+  if (c) {
+    const total = c.modules + 20;
+    const m = Math.max(1, Math.min(4, Math.floor((W - 2 * Math.round(0.6 * DOT)) / total)));
+    const bw = c.modules * m, x0 = Math.round((W - bw) / 2);
+    const bh = Math.max(4 * DOT, H - y - codePx - Math.round(1.2 * DOT));
+    for (const [x, w] of c.bars) g.fillRect(x0 + x * m, y, w * m, bh);
+    y += bh + 2;
+  }
+  g.font = `600 ${codePx}px Inter, Roboto, Arial, sans-serif`; g.textAlign = 'center';
+  g.fillText(it.code, W / 2, y); g.textAlign = 'left';
+  // pure black and white: thermal printers turn grey into speckles
+  const im = g.getImageData(0, 0, W, H), d = im.data;
+  for (let i = 0; i < d.length; i += 4) { const v = d[i] * .3 + d[i + 1] * .59 + d[i + 2] * .11 < 150 ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+  g.putImageData(im, 0, 0);
+  return { cv, wmm, hmm, fits: !!c && c.modules + 20 <= W / 2 };
+}
+async function shareLabels(it, size, copies) {
+  const { cv, wmm, hmm } = labelCanvas(it, size);
+  const N = window.NrrlNative;
+  const safe = String(it.code).replace(/[^\w-]+/g, '_');
+  if (canPdf()) {
+    try {
+      toast('Making the labels…');
+      if (!window.NrrlPdf) await loadScript(['pdf.js']);
+      const { jsPDF } = window.NrrlPdf;
+      const doc = new jsPDF({ unit: 'mm', format: [wmm, hmm], orientation: wmm > hmm ? 'landscape' : 'portrait' });
+      const png = cv.toDataURL('image/png');
+      for (let i = 0; i < copies; i++) { if (i) doc.addPage([wmm, hmm], wmm > hmm ? 'landscape' : 'portrait'); doc.addImage(png, 'PNG', 0, 0, wmm, hmm); }
+      const w = await N.Filesystem.writeFile({ path: `Label-${safe}.pdf`, data: doc.output('datauristring').split(',')[1], directory: N.Directory.Cache });
+      await N.Share.share({ title: 'Label ' + it.code, text: `${it.name} · ${it.code}`, files: [w.uri], dialogTitle: 'Print or send the label' });
+    } catch (e) { if (!/cancel/i.test(String(e && e.message))) toast('Could not make the label: ' + (e.message || e), true); }
+    return;
+  }
+  // in the browser: save the label picture
+  const a = document.createElement('a'); a.href = cv.toDataURL('image/png'); a.download = `Label-${safe}.png`; document.body.appendChild(a); a.click(); a.remove();
+}
+function openLabelSheet(it, opts = {}) {
+  let size = LS.get('lblSize', '50x25'); if (!LABEL_SIZES[size]) size = '50x25';
+  let copies = 1;
+  const d = openSheet('labelSheet', `
+    <h3>${opts.fresh ? 'Item saved' : 'Barcode label'}</h3>
+    <p class="s">${esc(it.name)} · ${money(it.retail)}</p>
+    <div class="lblprev" id="lPrev"></div>
+    <div class="field" style="margin-top:12px"><span class="lbl">Label size</span>
+      <div class="seg" role="group" aria-label="Label size" id="lSize">${Object.keys(LABEL_SIZES).map(k => `<button type="button" data-size="${k}" aria-pressed="${k === size}">${k.replace('x', ' × ')} mm</button>`).join('')}</div></div>
+    <div class="field" style="margin-top:12px"><span class="lbl">How many labels</span>
+      <div class="ctr" style="margin:0"><button class="qb" type="button" id="lLess" aria-label="One less">−</button><input type="number" inputmode="numeric" id="lCopies" value="1" min="1" max="500" aria-label="Copies"><button class="qb" type="button" id="lMore" aria-label="One more">+</button></div></div>
+    <p class="hint" style="margin-top:10px">${canPdf() ? 'Share opens the label as a PDF: print it from your label printer’s app, or send it on WhatsApp.' : 'Saves the label as a picture.'} The laptop can print it too: Labels → search ${esc(it.code)}.</p>
+    <div class="acts2">
+      ${opts.fresh ? '<button class="btn" type="button" id="lAnother">Add another item</button>' : '<button class="btn" type="button" id="lClose">Close</button>'}
+      <button class="btn primary" type="button" id="lShare">${canPdf() ? 'Share label' : 'Save label'}</button>
+      ${opts.fresh ? '<button class="btn w" type="button" id="lClose">Done</button>' : ''}
+    </div>`, opts.onClose);
+  const draw = () => { const { cv } = labelCanvas(it, size); cv.className = 'lblcv'; const p = $('#lPrev', d); p.innerHTML = ''; p.appendChild(cv); };
+  draw();
+  $('#lSize', d).addEventListener('click', e => { const b = e.target.closest('[data-size]'); if (!b) return; size = b.dataset.size; LS.set('lblSize', size); $$('#lSize button', d).forEach(x => x.setAttribute('aria-pressed', x === b)); draw(); });
+  const setC = n => { copies = Math.max(1, Math.min(500, Math.round(+n) || 1)); $('#lCopies', d).value = copies; };
+  $('#lLess', d).addEventListener('click', () => setC(copies - 1));
+  $('#lMore', d).addEventListener('click', () => setC(copies + 1));
+  $('#lCopies', d).addEventListener('change', e => setC(e.target.value));
+  $('#lShare', d).addEventListener('click', () => shareLabels(it, size, copies));
+  $$('#lClose', d).forEach(b => b.addEventListener('click', closeSheet));
+  $('#lAnother', d)?.addEventListener('click', () => { closeSheet(); openItemSheet(null); });
+}
+// next free code made on a phone. Phones use NR50001 upwards and laptops NR10001 upwards, so a laptop
+// working offline never hands out the same code as a phone.
+function nextPhoneCode(after) {
+  let n = 50000;
+  for (const c of S.items.keys()) { const m = /^NR(5\d{4,})$/.exec(c); if (m && +m[1] > n) n = +m[1]; }
+  if (after) { const m = /^NR(\d+)$/.exec(after); if (m && +m[1] > n) n = +m[1]; }
+  return 'NR' + (n + 1);
+}
+
 /* ---------------- sheets ---------------- */
 function openSheet(id, html, onClose) {
   closeSheet();
@@ -1143,26 +1266,38 @@ function openItemSheet(it, opts = {}) {
       <h3>${editing ? (canEdit ? 'Edit item' : esc(it.name)) : opts.fromBill ? 'New barcode' : 'Add item'}</h3>
       <p class="s">${opts.fromBill ? `Code <b class="num">${esc(it.code)}</b> isn’t in the item list. Add it once; after that it scans straight into bills.` : editing && !canEdit ? 'Changing items is switched off for you.' : 'Prices include GST.'}</p>
       <div class="grid2">
-        <div class="field w"><label class="lbl" for="fCode">Barcode / code</label><div style="display:flex;gap:8px"><input type="text" id="fCode" value="${esc(it?.code ?? '')}" autocomplete="off" ${canEdit ? '' : 'disabled'}>${canEdit ? '<button type="button" class="btn sm" id="fScan">Scan</button>' : ''}</div></div>
+        <div class="field w"><label class="lbl" for="fCode">Barcode / code</label><div style="display:flex;gap:8px"><input type="text" id="fCode" value="${esc(it?.code ?? '')}" autocomplete="off" placeholder="${editing ? '' : 'Leave blank for a new code'}" ${canEdit ? '' : 'disabled'}>${canEdit ? '<button type="button" class="btn sm" id="fScan">Scan</button>' + (opts.fromBill ? '' : '<button type="button" class="btn sm" id="fGen">New code</button>') : ''}</div>
+          <div class="bcprev" id="fBc"></div></div>
         <div class="field w"><label class="lbl" for="fName">Item name</label><input type="text" id="fName" value="${esc(it?.name ?? '')}" placeholder="e.g. Metallic balloons, pack of 50" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fRetail">Retail ₹</label><input type="number" inputmode="decimal" id="fRetail" value="${it?.retail ?? ''}" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fWhole">Wholesale ₹</label><input type="number" inputmode="decimal" id="fWhole" value="${it?.wholesale || ''}" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"${seeStock ? '' : ' hidden'}><label class="lbl" for="fStock">Stock</label><input type="number" inputmode="decimal" id="fStock" value="${it?.stock ?? ''}" placeholder="Leave blank to not track" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fUnit">Unit</label><select id="fUnit" ${canEdit ? '' : 'disabled'}>${['pcs', 'pkt', 'box', 'dozen', 'set', 'roll', 'kg', 'mtr'].map(u => `<option${(it?.unit || 'pcs') === u ? ' selected' : ''}>${u}</option>`).join('')}</select></div>
         <div class="field"><label class="lbl" for="fGst">GST %</label><select id="fGst" ${canEdit ? '' : 'disabled'}>${[0, 5, 12, 18, 28].map(g => `<option value="${g}"${(it?.gst ?? 18) == g ? ' selected' : ''}>${g}%</option>`).join('')}</select></div>
+        <div class="field"><label class="lbl" for="fWunit">Wholesale rate is per</label><select id="fWunit" ${canEdit ? '' : 'disabled'}>${[...new Set(['', 'dozen', 'pkt', 'box', 'set', 'roll', it?.wholesale_unit || ''])].map(u => `<option value="${u}"${(it?.wholesale_unit || '') === u ? ' selected' : ''}>${u || 'same unit'}</option>`).join('')}</select></div>
+        <div class="field" id="fWqtyF"><label class="lbl" for="fWqty">Pieces in one</label><input type="number" inputmode="numeric" id="fWqty" value="${it?.wholesale_qty > 1 ? it.wholesale_qty : ''}" placeholder="e.g. 12" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fHsn">HSN</label><input type="text" inputmode="numeric" id="fHsn" value="${esc(it?.hsn ?? '')}" ${canEdit ? '' : 'disabled'}></div>
       </div>
       <p class="err" id="fErr" style="text-align:left"></p>
       <div class="acts2">
         <button class="btn" type="button" id="fCancel">${canEdit ? 'Cancel' : 'Close'}</button>
         ${canEdit ? `<button class="btn primary" type="submit" id="fSave">${opts.fromBill ? 'Save & add to bill' : 'Save item'}</button>` : ''}
+        ${editing && can('labels') ? '<button class="btn w" type="button" id="fLabel">Barcode label</button>' : ''}
         ${editing && can('edit') ? '<button class="btn danger w" type="button" id="fDel">Remove item</button>' : ''}
       </div>
       <div class="confirm" id="fConfirm" hidden><span>Remove this item from the list? Old bills keep their copy.</span><button class="btn sm" type="button" id="fNo">Keep</button><button class="btn sm danger" type="button" id="fYes">Remove</button></div>
     </form>`, () => { if (S.view === 'bill') startCam(); });
   if (S.view === 'bill' && opts.fromBill) { /* keep camera; scans are ignored while this is open */ }
   $('#fCancel', d).addEventListener('click', closeSheet);
-  $('#fScan', d)?.addEventListener('click', () => scanInto($('#fCode', d)));
+  let genCode = null; // the code this sheet made up, if any
+  const bc = () => { const v = $('#fCode', d).value.trim(); $('#fBc', d).innerHTML = v ? (barcodeSvg(v) ? barcodeSvg(v) + `<span class="num">${esc(v)}</span>` : '<span class="s">This code has letters a barcode can’t hold. Use New code.</span>') : ''; };
+  const wq = () => { $('#fWqtyF', d).hidden = !$('#fWunit', d).value; };
+  bc(); wq();
+  $('#fCode', d).addEventListener('input', bc);
+  $('#fWunit', d).addEventListener('change', () => { wq(); if ($('#fWunit', d).value === 'dozen' && !$('#fWqty', d).value) $('#fWqty', d).value = 12; });
+  $('#fScan', d)?.addEventListener('click', async () => { await scanInto($('#fCode', d)); });
+  $('#fGen', d)?.addEventListener('click', () => { genCode = nextPhoneCode(); $('#fCode', d).value = genCode; bc(); $('#fName', d).focus(); });
+  $('#fLabel', d)?.addEventListener('click', () => { closeSheet(); openLabelSheet(S.items.get(it.code) || it); });
   if (canEdit) setTimeout(() => (it?.code ? $('#fName', d) : $('#fCode', d)).focus(), 60);
   $('#fDel', d)?.addEventListener('click', () => { $('#fConfirm', d).hidden = false; });
   $('#fNo', d)?.addEventListener('click', () => { $('#fConfirm', d).hidden = true; });
@@ -1173,8 +1308,10 @@ function openItemSheet(it, opts = {}) {
   $('#itemForm', d).addEventListener('submit', async e => {
     e.preventDefault();
     const item = { code: $('#fCode', d).value.trim(), name: $('#fName', d).value.trim(), retail: r2($('#fRetail', d).value), wholesale: r2($('#fWhole', d).value) || 0,
-      stock: $('#fStock', d).value.trim() === '' ? '' : r2($('#fStock', d).value), unit: $('#fUnit', d).value, gst: +$('#fGst', d).value, hsn: $('#fHsn', d).value.trim() };
+      stock: $('#fStock', d).value.trim() === '' ? '' : r2($('#fStock', d).value), unit: $('#fUnit', d).value, gst: +$('#fGst', d).value, hsn: $('#fHsn', d).value.trim(),
+      wholesale_unit: $('#fWunit', d).value, wholesale_qty: $('#fWunit', d).value ? (+$('#fWqty', d).value > 0 ? +$('#fWqty', d).value : 1) : 1 };
     const err = m => { $('#fErr', d).textContent = m; };
+    if (!item.code && !editing) { genCode = item.code = nextPhoneCode(); $('#fCode', d).value = item.code; bc(); }
     if (!item.code) return err('Add a barcode or short code, for example BLN-50.');
     if (!item.name) return err('Add the item name.');
     if (!(item.retail > 0)) return err('Add a retail price above ₹0.');
@@ -1182,12 +1319,22 @@ function openItemSheet(it, opts = {}) {
     if (clash && (!editing || clash.code !== it.code)) return err(`Code ${item.code} is already “${clash.name}”.`);
     $('#fSave', d).disabled = true;
     try {
-      await api('counter_item_save', { p_token: S.token, p_item: item, p_old_code: editing ? it.code : null });
+      for (let tries = 0; ; tries++) {
+        try { await api('counter_item_save', { p_token: S.token, p_item: item, p_old_code: editing ? it.code : null }); break; }
+        catch (ex) {
+          // a code made up here was just taken on another phone: take the next one
+          if (ex.code === 'CODE_TAKEN' && genCode && item.code === genCode && tries < 8) { genCode = item.code = nextPhoneCode(item.code); $('#fCode', d).value = item.code; bc(); continue; }
+          throw ex;
+        }
+      }
       if (editing && it.code !== item.code) S.items.delete(it.code);
       const n = normItem({ ...item, stock: item.stock === '' ? null : item.stock });
       S.items.set(n.code, n); LS.set('items', [...S.items.values()]);
+      const showLabel = !editing && !opts.fromBill && can('labels');
       closeSheet();
-      if (opts.fromBill) addItem(n); else toast('Saved ' + n.name);
+      if (opts.fromBill) addItem(n);
+      else if (showLabel) openLabelSheet(n, { fresh: true });
+      else toast('Saved ' + n.name);
       if (S.view === 'items') renderItems();
     } catch (ex) { err(ex.message); $('#fSave', d).disabled = false; }
   });
@@ -1208,7 +1355,7 @@ async function scanInto(input) {
     const hideMain = $('#app'); hideMain.style.visibility = 'hidden';
     const done = async () => { await Native.stop(); ov.remove(); hideMain.style.visibility = ''; if (sh) sh.style.visibility = ''; if (wasBill && !anySheetOpen()) startCam(); };
     ov.querySelector('button').addEventListener('click', done);
-    try { await Native.start(code => { input.value = code; beep(true); done(); }, null); }
+    try { await Native.start(code => { input.value = code; input.dispatchEvent(new Event('input')); beep(true); done(); }, null); }
     catch (e) { toast('Camera could not start.', true); done(); }
     return;
   }
@@ -1221,7 +1368,7 @@ async function scanInto(input) {
   const done = () => { Scanner.stop(); ov.remove(); if (wasBill && !anySheetOpen()) startCam(); };
   ov.querySelector('button').addEventListener('click', done);
   try {
-    await Scanner.start(ov.querySelector('video'), code => { input.value = code; beep(true); done(); });
+    await Scanner.start(ov.querySelector('video'), code => { input.value = code; input.dispatchEvent(new Event('input')); beep(true); done(); });
   } catch (e) { toast('Camera could not start.', true); done(); }
 }
 
