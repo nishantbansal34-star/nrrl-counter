@@ -1426,7 +1426,22 @@ async function scanInto(input) {
 }
 
 /* ---------------- sales (bills) ---------------- */
-let billRange = 'today', bills = [], openBill = null;
+let billRange = 'today', bills = [], openBill = null, salesSum = null, salesMore = false, salesOld = false;
+// bills come 50 at a time (totals for the whole range come from the server), so a busy month stays quick on old phones
+async function loadSalesPage(first, limit = 50) {
+  const own = can('reports');
+  const [f, t] = rangeDates(own ? billRange : 'today');
+  const args = { p_token: S.token, p_from: f.toISOString(), p_to: t ? t.toISOString() : null };
+  if (!salesOld) {
+    try {
+      const last = first ? null : bills[bills.length - 1];
+      const r = await api('counter_sales', { ...args, p_before_t: last ? last.created_at : null, p_before_id: last ? last.id : null, p_limit: limit });
+      if (first) { bills = r.bills; salesSum = r.summary; } else bills = bills.concat(r.bills);
+      salesMore = !!r.more; return;
+    } catch (e) { if (!/counter_sales|PGRST202|Could not find|Server error 404/i.test(String(e.message) + ' ' + String(e.code))) throw e; salesOld = true; }
+  }
+  bills = await api('counter_bills', args); salesSum = null; salesMore = false; // older server: everything at once
+}
 function rangeDates(r) {
   const now = new Date(), d0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (r === 'today') return [d0, null];
@@ -1441,19 +1456,19 @@ async function renderBills(reload) {
   if (!can('sales')) { el.innerHTML = '<div class="page"><div class="empty"><b>Sales are switched off for you</b></div></div>'; return; }
   if (reload) {
     el.innerHTML = `<div class="page"><p class="hint">Loading sales…</p></div>`;
-    try { const [f, t] = rangeDates(own ? billRange : 'today'); bills = await api('counter_bills', { p_token: S.token, p_from: f.toISOString(), p_to: t ? t.toISOString() : null }); }
+    try { await loadSalesPage(true); }
     catch (e) { el.innerHTML = `<div class="page"><p class="err">${esc(e.message)}</p><button class="btn" id="rl">Try again</button></div>`; $('#rl').addEventListener('click', () => renderBills(true)); return; }
   }
   const live = bills.filter(b => !b.voided);
-  const sum = a => a.reduce((s, b) => s + +b.total, 0);
   const by = k => { const m = {}; live.forEach(b => { m[b[k]] = (m[b[k]] || 0) + +b.total; }); return m; };
-  const pay = by('payment'), staff = by('staff_name');
+  const total = salesSum ? +salesSum.total : live.reduce((s, b) => s + +b.total, 0), count = salesSum ? +salesSum.count : live.length;
+  const pay = salesSum ? salesSum.by_payment || {} : by('payment'), staff = salesSum ? salesSum.by_staff || {} : by('staff_name');
   el.innerHTML = `<div class="page">
     <div class="ph"><h2>${own ? 'Sales' : 'Today’s sales'}</h2>
       <div style="display:flex;gap:8px;flex-wrap:wrap">${own ? `<div class="seg" id="rangeSeg">${[['today', 'Today'], ['yesterday', 'Yesterday'], ['week', '7 days'], ['month', 'Month']].map(([k, l]) => `<button type="button" data-r="${k}" aria-pressed="${billRange === k}">${l}</button>`).join('')}</div><button class="btn sm" id="expBills">Download CSV</button>` : ''}<button class="btn sm" id="refBills">Refresh</button></div></div>
     <div class="stats">
-      <div class="stat"><div class="lbl">Total</div><div class="v">${money(sum(live))}</div></div>
-      <div class="stat"><div class="lbl">Bills</div><div class="v">${live.length}</div></div>
+      <div class="stat"><div class="lbl">Total</div><div class="v">${money(total)}</div></div>
+      <div class="stat"><div class="lbl">Bills</div><div class="v">${count}</div></div>
       <div class="stat"><div class="lbl">Cash</div><div class="v">${money(pay.cash || 0)}</div></div>
       <div class="stat"><div class="lbl">UPI</div><div class="v">${money(pay.upi || 0)}</div></div>
       <div class="stat"><div class="lbl">Udhaar</div><div class="v">${money(pay.udhaar || 0)}</div></div>
@@ -1461,7 +1476,14 @@ async function renderBills(reload) {
     ${isOwner() && Object.keys(staff).length > 1 ? `<p class="hint" style="margin:-4px 0 12px">By person: ${Object.entries(staff).map(([n, v]) => `${esc(n)} ${money(v)}`).join(' · ')}</p>` : ''}
     ${S.pending.length ? `<p class="hint" style="margin-bottom:10px">${S.pending.length} bill(s) on this phone are waiting to upload and aren’t counted yet.</p>` : ''}
     <ul class="list" id="billList">${bills.length ? bills.map(b => billRow(b)).join('') : '<li class="empty"><b>No bills yet</b>Saved bills show up here.</li>'}</ul>
+    ${salesMore ? '<button class="btn w" type="button" id="moreBills" style="width:100%;margin-top:10px">Show more bills</button>' : ''}
   </div>`;
+  $('#moreBills')?.addEventListener('click', async e => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Loading…';
+    const y = window.scrollY;
+    try { await loadSalesPage(false); renderBills(false); window.scrollTo(0, y); }
+    catch (ex) { btn.disabled = false; btn.textContent = 'Show more bills'; toast(ex.message, true); }
+  });
   $('#rangeSeg')?.addEventListener('click', e => { const b = e.target.closest('[data-r]'); if (!b) return; billRange = b.dataset.r; openBill = null; renderBills(true); });
   $('#refBills').addEventListener('click', () => renderBills(true));
   $('#expBills')?.addEventListener('click', exportBills);
@@ -1543,7 +1565,12 @@ function exportItems() {
   const rows = [['code', 'name', 'retail', 'wholesale', 'stock', 'unit', 'gst', 'hsn'], ...[...S.items.values()].map(i => [i.code, i.name, i.retail, i.wholesale, i.stock ?? '', i.unit, i.gst, i.hsn])];
   downloadText('nrrl-items.csv', rows.map(r => r.map(csvCell).join(',')).join('\n'));
 }
-function exportBills() {
+async function exportBills() {
+  if (salesMore) { // the file needs every bill in the range
+    toast('Getting all bills…');
+    try { while (salesMore) await loadSalesPage(false, 200); } catch (e) { toast(e.message, true); return; }
+    renderBills(false);
+  }
   const rows = [['bill_no', 'date', 'staff', 'customer', 'phone', 'payment', 'price_list', 'item_code', 'item', 'qty', 'rate', 'amount', 'bill_total', 'status']];
   bills.forEach(b => b.lines.forEach(l => rows.push([b.id, new Date(b.created_at).toLocaleString('en-IN'), b.staff_name, b.customer, b.phone, b.payment, b.mode, l.code, l.name, l.qty, l.price, l.amount, b.total, b.voided ? 'cancelled' : 'ok'])));
   downloadText(`nrrl-sales-${billRange}.csv`, rows.map(r => r.map(csvCell).join(',')).join('\n'));

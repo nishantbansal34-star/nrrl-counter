@@ -32,7 +32,11 @@
       "sync.js",
       "sheets-script.gs",
       "link.js",
-      "ledger.js"
+      "ledger.js",
+      "!**/node_modules/better-sqlite3/deps/**",
+      "!**/node_modules/better-sqlite3/src/**",
+      "!**/node_modules/**/*.{md,markdown,ts,map,cc,h,gyp,gypi}",
+      "!**/node_modules/**/{test,tests,docs,example,examples}/**"
     ],
     "directories": {
       "output": "dist",
@@ -53,6 +57,10 @@
       "createStartMenuShortcut": true,
       "shortcutName": "NRRL Billing",
       "artifactName": "NRRL-Billing-Setup-${version}.exe"
-    }
+    },
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US"
+    ]
   }
 }

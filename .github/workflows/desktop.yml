@@ -65,6 +65,29 @@ jobs:
           npx electron . 2>&1 | tee selftest.log
           grep -q "SELFTEST OK" selftest.log
 
+      - name: Install quietly, open the installed app, then update over it (what "Update now" does)
+        shell: pwsh
+        working-directory: .
+        env:
+          NRRL_DATA_DIR: ${{ runner.temp }}/nrrl-installed
+        run: |
+          "Installer size: {0:N1} MB" -f ((Get-Item .\NRRL-Billing-Setup.exe).Length / 1MB)
+          $p = Start-Process -FilePath .\NRRL-Billing-Setup.exe -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "install exit $($p.ExitCode)"; exit 1 }
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'NRRL Billing.exe' | Select-Object -First 1
+          if (!$exe) { Write-Error 'app not installed'; exit 1 }
+          "Installed: $($exe.FullName)"
+          $env:NRRL_SELFTEST = '1'
+          $a = Start-Process -FilePath $exe.FullName -Wait -PassThru
+          if ($a.ExitCode -ne 0) { Write-Error "installed app self-test failed ($($a.ExitCode))"; exit 1 }
+          "Installed app self-test OK"
+          Remove-Item Env:NRRL_SELFTEST
+          $before = (Get-Item $exe.FullName).LastWriteTimeUtc
+          $p = Start-Process -FilePath .\NRRL-Billing-Setup.exe -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "update exit $($p.ExitCode)"; exit 1 }
+          if (!(Test-Path $exe.FullName)) { Write-Error 'app missing after update'; exit 1 }
+          "Quiet update over the installed app OK"
+
       - uses: actions/upload-artifact@v4
         with:
           name: nrrl-billing-windows

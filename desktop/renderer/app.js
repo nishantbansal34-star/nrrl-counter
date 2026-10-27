@@ -1985,7 +1985,7 @@ async function checkUpdate(manual) {
   $('#updNow', box).addEventListener('click', async () => {
     $('#updNow', box).disabled = true; $('#updLater', box).disabled = true;
     $('#updMsg', box).textContent = 'Starting download…';
-    try { await rpc('app.installUpdate'); $('#updMsg', box).textContent = 'The app will close now. Click through the installer, then open NRRL Billing again.'; }
+    try { await rpc('app.installUpdate'); $('#updMsg', box).textContent = 'Installing… NRRL Billing closes now and opens again by itself in about a minute.'; }
     catch (e) { $('#updMsg', box).textContent = e.message; $('#updNow', box).disabled = false; $('#updLater', box).disabled = false; }
   });
 }

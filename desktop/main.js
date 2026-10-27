@@ -274,5 +274,6 @@ app.on('window-all-closed', () => app.quit());
 // a downloaded update starts once this app has closed (after its exit backup), so the installer can replace it
 app.on('quit', () => {
   if (!pendingInstaller) return;
-  try { require('child_process').spawn(pendingInstaller, [], { detached: true, stdio: 'ignore' }).unref(); } catch (e) {}
+  // /S installs quietly over this copy, --force-run opens the app again afterwards
+  try { require('child_process').spawn(pendingInstaller, ['/S', '--force-run'], { detached: true, stdio: 'ignore' }).unref(); } catch (e) {}
 });
