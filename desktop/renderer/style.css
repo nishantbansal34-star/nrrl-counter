@@ -209,6 +209,11 @@ table.grid tr.cx td { color: var(--muted); text-decoration: line-through; }
 .quick button { border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 4px 12px; font-size: 13px; font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quick button:hover { border-color: var(--accent); background: var(--accent-soft); }
 .quick button kbd { margin-left: 6px; }
+.quick.loose button { border-radius: 10px; border-color: var(--accent); padding: 6px 12px; }
+.quick.loose button .num { margin-left: 4px; font-weight: 500; }
+.quick.loose button.new { border-style: dashed; border-color: var(--line); color: var(--accent); }
+.checkrow { flex-direction: row !important; align-items: center; gap: 10px; background: var(--sunk, rgba(0,0,0,.04)); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+.checkrow input { width: 18px; height: 18px; flex: none; }
 .sugg mark { background: color-mix(in srgb, var(--marigold) 40%, transparent); color: inherit; border-radius: 3px; }
 .logo-prev { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .logo-prev .box { background: #fff; border: 1px dashed var(--line); border-radius: 8px; padding: 8px; min-width: 120px; min-height: 56px; display: flex; align-items: center; justify-content: center; }

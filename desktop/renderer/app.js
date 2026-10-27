@@ -63,6 +63,7 @@ async function reloadItems() {
   const list = await rpc('items.all');
   S.items.clear();
   for (const it of list) S.items.set(it.code, it);
+  renderLoose();
 }
 function findItem(code) {
   code = String(code || '').trim();
@@ -427,7 +428,8 @@ document.addEventListener('keydown', e => {
   else if (e.altKey && k.toLowerCase() === 'w') { e.preventDefault(); if (S.lastBill) sendWhatsApp(S.lastBill); }
   else if (e.altKey && ['d', 't', 'k'].includes(k.toLowerCase())) { e.preventDefault(); if (!quickQty(S.sel, { d: 'doz', t: 'ten', k: 'pack' }[k.toLowerCase()])) beep(false); focusScan(); }
   else if (e.ctrlKey && k.toLowerCase() === 'h') { e.preventDefault(); holdBill(); }
-  else if (e.ctrlKey && /^[1-9]$/.test(k)) { const it = topItems(9)[+k - 1]; if (it) { e.preventDefault(); addItem(it); focusScan(); } }
+  else if (e.ctrlKey && e.shiftKey && /^Digit[1-9]$/.test(e.code)) { const it = looseItems()[+e.code.slice(5) - 1]; if (it) { e.preventDefault(); addItem(it); focusScan(); } }
+  else if (e.ctrlKey && /^[1-9]$/.test(k)) { const it = topItems(20).filter(i => !i.nobarcode)[+k - 1]; if (it) { e.preventDefault(); addItem(it); focusScan(); } }
   else if (e.altKey && /^[1-4]$/.test(k)) { e.preventDefault(); S.cart.payment = PAY[+k - 1][0]; saveCart(); renderTotals(); }
   else if ((document.activeElement === document.body || /^(BUTTON|A)$/.test(document.activeElement?.tagName)) && k.length === 1 && !e.ctrlKey && !e.altKey) { focusScan(); }
 });
@@ -469,6 +471,7 @@ function buildBill() {
       <div class="hintline"><span><kbd>5*</kbd> before a scan = qty 5</span><span><kbd>+</kbd><kbd>−</kbd> change qty</span><span><kbd>Del</kbd> remove line</span><span><kbd>↑</kbd><kbd>↓</kbd> pick line</span><span><kbd>F4</kbd> type qty</span><span><kbd>F6</kbd> retail/wholesale</span><span><kbd>Alt+D</kbd> dozen <kbd>Alt+T</kbd> ten <kbd>Alt+K</kbd> pack</span><span><kbd>Ctrl+H</kbd> hold bill</span><span><kbd>Ctrl+P</kbd> reprint last</span></div>
       <div class="incoming" id="incoming" hidden></div>
       <div class="heldbar" id="heldBar" hidden></div>
+      <div class="quick loose" id="loose" hidden></div>
       <div class="quick" id="quick" hidden></div>
       <div class="lines" id="linesWrap"><table class="grid" id="lines"></table></div>
     </div>
@@ -493,15 +496,29 @@ function buildBill() {
   });
   renderHeld();
   $('#quick').addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (b) { addItem(S.items.get(b.dataset.code)); focusScan(); } });
+  $('#loose').addEventListener('click', e => {
+    if (e.target.closest('#looseNew')) return openItemForm(null, { loose: true });
+    const b = e.target.closest('[data-code]'); if (b) { addItem(S.items.get(b.dataset.code)); focusScan(); }
+  });
   renderQuick();
   $('#lines').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); focusScan(); } });
   $('#v-bill').addEventListener('mouseup', e => {
     if (!e.target.closest('input,select,textarea,button,a') && !window.getSelection().toString()) focusScan();
   });
 }
+// items with no barcode (loose ribbon, single balloons…): a button each, one click adds it
+function looseItems() { const f = LS.get('freq', {}); return [...S.items.values()].filter(i => i.nobarcode).sort((a, b) => (f[b.code] || 0) - (f[a.code] || 0) || a.name.localeCompare(b.name)); }
+function renderLoose() {
+  const el = $('#loose'); if (!el) return;
+  const list = looseItems(), add = can('add');
+  el.hidden = !list.length && !add;
+  el.innerHTML = `<span class="lbl2">No barcode:</span>` + list.map((it, i) => `<button type="button" data-code="${esc(it.code)}" title="${esc(it.name)}${i < 9 ? ' — Ctrl+Shift+' + (i + 1) : ''}">${esc(it.name)} <span class="num muted">${money(priceFor(it))}</span>${i < 9 ? `<kbd>⇧${i + 1}</kbd>` : ''}</button>`).join('')
+    + (add ? '<button type="button" id="looseNew" class="new" title="Add an item that has no barcode">+ New</button>' : '');
+}
 function renderQuick() {
+  renderLoose();
   const el = $('#quick'); if (!el) return;
-  const top = topItems(9);
+  const top = topItems(20).filter(i => !i.nobarcode).slice(0, 9);
   el.hidden = !top.length;
   el.innerHTML = `<span class="lbl2">Often sold:</span>` + top.map((it, i) => `<button type="button" data-code="${esc(it.code)}" title="${esc(it.name)} — Ctrl+${i + 1}">${esc(it.name)}<kbd>^${i + 1}</kbd></button>`).join('');
 }
@@ -815,10 +832,12 @@ async function openItemForm(it, opts = {}) {
   const units = ['pcs', 'pkt', 'box', 'dozen', 'set', 'roll', 'kg', 'g', 'mtr', 'ltr', 'pair'];
   const unit = it?.unit || 'pcs';
   const m = openModal(`
-    <h2>${editing ? 'Edit item' : opts.fromBill ? 'New barcode' : 'Add item'}</h2>
+    <h2>${editing ? 'Edit item' : opts.loose ? 'New item without a barcode' : opts.fromBill ? 'New barcode' : 'Add item'}</h2>
+    ${opts.loose ? '<p class="muted">For things that never get a label. It gets a button on the Bill screen: one click adds it.</p>' : ''}
     ${opts.fromBill ? `<p class="muted">Code <b class="num">${esc(it.code)}</b> is not in your item list. Add it once and it scans straight into bills after this.</p>` : ''}
     <form id="itemForm" class="form2" novalidate>
-      <label class="f w"><span>Barcode / code</span><div style="display:flex;gap:8px"><input type="text" id="fCode" value="${esc(it?.code ?? '')}" autocomplete="off" spellcheck="false"><button type="button" class="btn" id="fGen" title="For items without a barcode">Make code</button></div></label>
+      <label class="f w checkrow"><input type="checkbox" id="fLoose" ${(editing ? it.nobarcode : opts.loose) ? 'checked' : ''}><span><b>No barcode on this item</b> — show it as a button on the Bill screen</span></label>
+      <label class="f w" id="fCodeWrap"${opts.loose ? ' hidden' : ''}><span>Barcode / code</span><div style="display:flex;gap:8px"><input type="text" id="fCode" value="${esc(it?.code ?? '')}" autocomplete="off" spellcheck="false"><button type="button" class="btn" id="fGen" title="For items without a barcode">Make code</button></div></label>
       <label class="f w"><span>Item name</span><input type="text" id="fName" value="${esc(it?.name ?? '')}" placeholder="e.g. Metallic balloons, pack of 50"></label>
       <label class="f"><span>Retail price ₹ (incl. GST)</span><input type="number" step="any" id="fRetail" value="${it?.retail ?? ''}"></label>
       <label class="f"><span>Wholesale price ₹</span><input type="number" step="any" id="fWhole" value="${it?.wholesale || ''}" placeholder="Optional"></label>
@@ -834,12 +853,12 @@ async function openItemForm(it, opts = {}) {
       <div class="foot w">
         ${editing ? '<button type="button" class="btn danger left" id="fDel">Remove item</button>' : ''}
         <button type="button" class="btn" data-close>Cancel</button>
-        ${!opts.fromBill ? '<button type="button" class="btn" id="fSaveLabel">Save &amp; print labels</button>' : ''}
-        <button type="submit" class="btn primary">${opts.fromBill ? 'Save &amp; add to bill' : 'Save item'}</button>
+        ${!opts.fromBill && !opts.loose ? '<button type="button" class="btn" id="fSaveLabel">Save &amp; print labels</button>' : ''}
+        <button type="submit" class="btn primary">${opts.fromBill || (opts.loose && S.view === 'bill') ? 'Save &amp; add to bill' : 'Save item'}</button>
       </div>
       <div class="confirmbar w" id="fConfirm" hidden><span>Remove this item from your list? Old bills keep their copy.</span><button type="button" class="btn" id="fNo">Keep</button><button type="button" class="btn danger" id="fYes">Remove</button></div>
     </form>`);
-  setTimeout(() => (it?.code ? $('#fName', m) : $('#fCode', m)).focus(), 30);
+  setTimeout(() => (it?.code || opts.loose ? $('#fName', m) : $('#fCode', m)).focus(), 30);
   const syncW = () => {
     const wu = $('#fWUnit', m).value, ru = $('#fUnit', m).value;
     const show = wu && wu !== ru;
@@ -858,17 +877,19 @@ async function openItemForm(it, opts = {}) {
   const submit = async labels => {
     if ($('#fWUnit', m).value && $('#fWUnit', m).value !== $('#fUnit', m).value && !(+$('#fWQty', m).value > 0)) { $('#fErr', m).textContent = `Enter how many ${$('#fUnit', m).value} are in one ${$('#fWUnit', m).value}.`; return; }
     const item = {
-      code: $('#fCode', m).value.trim(), name: $('#fName', m).value.trim(), retail: $('#fRetail', m).value, wholesale: $('#fWhole', m).value,
+      code: $('#fCode', m).value.trim(), name: $('#fName', m).value.trim(), retail: $('#fRetail', m).value, wholesale: $('#fWhole', m).value, nobarcode: $('#fLoose', m).checked,
       stock: $('#fStock', m).value.trim(), unit: $('#fUnit', m).value,
       wholesale_unit: $('#fWUnit', m).value === $('#fUnit', m).value ? '' : $('#fWUnit', m).value,
       wholesale_qty: $('#fWUnit', m).value && $('#fWUnit', m).value !== $('#fUnit', m).value ? ($('#fWQty', m).value || 1) : 1, gst: $('#fGst', m).value, hsn: $('#fHsn', m).value, cost: $('#fCost', m).value, min_stock: $('#fMin', m).value.trim(),
     };
     try {
+      if (!item.code && item.nobarcode && !editing) { if (!item.name) { $('#fErr', m).textContent = 'Add the item name.'; return; } item.code = await rpc('items.nextCode'); }
       const saved = await rpc('items.save', item, editing ? it.code : null);
       if (editing && it.code !== saved.code) S.items.delete(it.code);
       S.items.set(saved.code, saved);
       closeModal(m);
-      if (opts.fromBill) addItem(saved, opts.qty || 1); else toast('Saved ' + saved.name);
+      renderLoose();
+      if (opts.fromBill || (opts.loose && S.view === 'bill')) addItem(saved, opts.qty || 1); else toast('Saved ' + saved.name);
       if (labels) openLabels(saved);
       if (S.view === 'items') renderItemRows();
     } catch (err) { $('#fErr', m).textContent = err.message; }
@@ -1141,7 +1162,7 @@ function renderItemRows() {
     : !list.length ? `<tbody><tr><td><div class="empty">Nothing matches.</div></td></tr></tbody>`
     : `<thead><tr><th>Item</th><th>Code</th><th class="r">Retail</th><th class="r">Wholesale</th><th class="r">Stock</th><th class="r">GST</th><th class="r" style="width:250px"></th></tr></thead>
       <tbody>${shown.map(it => `<tr class="click" data-code="${esc(it.code)}">
-        <td><b>${esc(it.name)}</b></td><td class="num muted">${esc(it.code)}</td>
+        <td><b>${esc(it.name)}</b>${it.nobarcode ? ' <span class="muted small">· no barcode</span>' : ''}</td><td class="num muted">${esc(it.code)}</td>
         <td class="r num">${money(it.retail)}<span class="muted small">/${esc(it.unit)}</span></td><td class="r num">${+it.wholesale ? money(it.wholesale) + (it.wholesale_unit ? `<span class="muted small">/${esc(it.wholesale_unit)}</span>` : '') : '<span class="muted">—</span>'}</td>
         <td class="r">${stockChip(it)}</td><td class="r num muted">${qf(it.gst)}%</td>
         <td class="r"><button type="button" class="btn" data-act="stock">+ Stock</button> <button type="button" class="btn" data-act="label">Labels</button> <button type="button" class="btn" data-act="edit">Edit</button></td></tr>`).join('')}</tbody>`;

@@ -134,7 +134,7 @@ async function loadItems(quiet) {
     renderQuick();
   } catch (e) { if (!quiet && !e.net) toast(e.message, true); }
 }
-function normItem(i) { return { code: String(i.code), name: i.name, retail: +i.retail, wholesale: +i.wholesale, wholesale_unit: i.wholesale_unit || '', wholesale_qty: +i.wholesale_qty || 1, stock: i.stock == null ? null : +i.stock, unit: i.unit || 'pcs', gst: +i.gst, hsn: i.hsn || '' }; }
+function normItem(i) { return { code: String(i.code), name: i.name, retail: +i.retail, wholesale: +i.wholesale, wholesale_unit: i.wholesale_unit || '', wholesale_qty: +i.wholesale_qty || 1, stock: i.stock == null ? null : +i.stock, unit: i.unit || 'pcs', gst: +i.gst, hsn: i.hsn || '', nobarcode: !!i.nobarcode }; }
 function findItem(code) {
   code = String(code || '').trim();
   if (!code) return null;
@@ -656,6 +656,7 @@ function buildBill() {
       <input type="search" id="find" placeholder="Search item or type code" autocomplete="off" enterkeyhint="go">
       <div class="seg" role="group" aria-label="Price list"><button type="button" data-mode="retail">Retail</button><button type="button" data-mode="wholesale">Wholesale</button></div>
     </div>
+    <div class="loose" id="loose" hidden aria-label="Items without a barcode"></div>
     <div class="quick" id="quick" hidden aria-label="Often sold"></div>
     <ul class="results" id="results"></ul>
     <div class="incoming" id="incoming" hidden></div>
@@ -696,6 +697,10 @@ function buildBill() {
     else if (!m.length) { find.value = ''; renderResults(''); unknownCode(v); }
   });
   $('#quick').addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (b) addItem(S.items.get(b.dataset.code)); });
+  $('#loose').addEventListener('click', e => {
+    if (e.target.closest('#looseNew')) return openItemSheet(null, { loose: true });
+    const b = e.target.closest('[data-code]'); if (b) addItem(S.items.get(b.dataset.code));
+  });
   renderQuick();
   $('#results').addEventListener('click', e => { const b = e.target.closest('[data-code]'); if (!b) return; addItem(S.items.get(b.dataset.code)); find.value = ''; renderResults(''); });
   $('.billtools .seg').addEventListener('click', e => { const b = e.target.closest('[data-mode]'); if (!b) return; setMode(b.dataset.mode); });
@@ -944,9 +949,20 @@ function hl(text, q) { // highlight the typed words
 function renderResults(q) {
   $('#results').innerHTML = search(q).map(it => `<li><button type="button" data-code="${esc(it.code)}"><span class="nm">${hl(it.name, q)} <span class="code">${esc(it.code)}</span></span><span class="num">${money(priceFor(it))}</span></button></li>`).join('');
 }
+// items with no barcode (loose ribbons, balloons by the piece…): one tap adds them to the bill
+function renderLoose() {
+  const el = $('#loose'); if (!el) return;
+  const f = LS.get('freq', {});
+  const list = [...S.items.values()].filter(i => i.nobarcode).sort((a, b) => (f[b.code] || 0) - (f[a.code] || 0) || a.name.localeCompare(b.name));
+  const add = can('add');
+  el.hidden = !list.length && !add;
+  el.innerHTML = list.map(it => `<button type="button" data-code="${esc(it.code)}"><span class="nm">${esc(it.name)}</span><span class="pr num">${money(priceFor(it))}</span></button>`).join('')
+    + (add ? `<button type="button" id="looseNew" class="new"><span class="nm">+ No-barcode item</span><span class="pr">add once, tap to bill</span></button>` : '');
+}
 function renderQuick() {
+  renderLoose();
   const el = $('#quick'); if (!el) return;
-  const top = topItems(10);
+  const top = topItems(14).filter(i => !i.nobarcode).slice(0, 10);
   el.hidden = !top.length;
   el.innerHTML = top.map(it => `<button type="button" data-code="${esc(it.code)}">${esc(it.name)}</button>`).join('');
 }
@@ -1263,10 +1279,11 @@ function openItemSheet(it, opts = {}) {
   const seeStock = can('stock');
   const d = openSheet('itemSheet', `
     <form id="itemForm" novalidate>
-      <h3>${editing ? (canEdit ? 'Edit item' : esc(it.name)) : opts.fromBill ? 'New barcode' : 'Add item'}</h3>
-      <p class="s">${opts.fromBill ? `Code <b class="num">${esc(it.code)}</b> isn’t in the item list. Add it once; after that it scans straight into bills.` : editing && !canEdit ? 'Changing items is switched off for you.' : 'Prices include GST.'}</p>
+      <h3>${editing ? (canEdit ? 'Edit item' : esc(it.name)) : opts.loose ? 'New no-barcode item' : opts.fromBill ? 'New barcode' : 'Add item'}</h3>
+      <p class="s">${opts.loose ? 'For things that never get a label. It shows as a button on the Bill screen: one tap adds it.' : opts.fromBill ? `Code <b class="num">${esc(it.code)}</b> isn’t in the item list. Add it once; after that it scans straight into bills.` : editing && !canEdit ? 'Changing items is switched off for you.' : 'Prices include GST.'}</p>
       <div class="grid2">
-        <div class="field w"><label class="lbl" for="fCode">Barcode / code</label><div style="display:flex;gap:8px"><input type="text" id="fCode" value="${esc(it?.code ?? '')}" autocomplete="off" placeholder="${editing ? '' : 'Leave blank for a new code'}" ${canEdit ? '' : 'disabled'}>${canEdit ? '<button type="button" class="btn sm" id="fScan">Scan</button>' + (opts.fromBill ? '' : '<button type="button" class="btn sm" id="fGen">New code</button>') : ''}</div>
+        <label class="field w check"${opts.loose ? ' hidden' : ''}><input type="checkbox" id="fLoose" ${(editing ? it.nobarcode : opts.loose) ? 'checked' : ''} ${canEdit ? '' : 'disabled'}><span><b>No barcode on this item</b><br><span class="s">Show it as a button on the Bill screen instead</span></span></label>
+        <div class="field w" id="fCodeF"${opts.loose ? ' hidden' : ''}><label class="lbl" for="fCode">Barcode / code</label><div style="display:flex;gap:8px"><input type="text" id="fCode" value="${esc(it?.code ?? '')}" autocomplete="off" placeholder="${editing ? '' : 'Leave blank for a new code'}" ${canEdit ? '' : 'disabled'}>${canEdit ? '<button type="button" class="btn sm" id="fScan">Scan</button>' + (opts.fromBill ? '' : '<button type="button" class="btn sm" id="fGen">New code</button>') : ''}</div>
           <div class="bcprev" id="fBc"></div></div>
         <div class="field w"><label class="lbl" for="fName">Item name</label><input type="text" id="fName" value="${esc(it?.name ?? '')}" placeholder="e.g. Metallic balloons, pack of 50" ${canEdit ? '' : 'disabled'}></div>
         <div class="field"><label class="lbl" for="fRetail">Retail ₹</label><input type="number" inputmode="decimal" id="fRetail" value="${it?.retail ?? ''}" ${canEdit ? '' : 'disabled'}></div>
@@ -1281,7 +1298,7 @@ function openItemSheet(it, opts = {}) {
       <p class="err" id="fErr" style="text-align:left"></p>
       <div class="acts2">
         <button class="btn" type="button" id="fCancel">${canEdit ? 'Cancel' : 'Close'}</button>
-        ${canEdit ? `<button class="btn primary" type="submit" id="fSave">${opts.fromBill ? 'Save & add to bill' : 'Save item'}</button>` : ''}
+        ${canEdit ? `<button class="btn primary" type="submit" id="fSave">${opts.fromBill || (opts.loose && S.view === 'bill') ? 'Save & add to bill' : 'Save item'}</button>` : ''}
         ${editing && can('labels') ? '<button class="btn w" type="button" id="fLabel">Barcode label</button>' : ''}
         ${editing && can('edit') ? '<button class="btn danger w" type="button" id="fDel">Remove item</button>' : ''}
       </div>
@@ -1298,7 +1315,7 @@ function openItemSheet(it, opts = {}) {
   $('#fScan', d)?.addEventListener('click', async () => { await scanInto($('#fCode', d)); });
   $('#fGen', d)?.addEventListener('click', () => { genCode = nextPhoneCode(); $('#fCode', d).value = genCode; bc(); $('#fName', d).focus(); });
   $('#fLabel', d)?.addEventListener('click', () => { closeSheet(); openLabelSheet(S.items.get(it.code) || it); });
-  if (canEdit) setTimeout(() => (it?.code ? $('#fName', d) : $('#fCode', d)).focus(), 60);
+  if (canEdit) setTimeout(() => (it?.code || opts.loose ? $('#fName', d) : $('#fCode', d)).focus(), 60);
   $('#fDel', d)?.addEventListener('click', () => { $('#fConfirm', d).hidden = false; });
   $('#fNo', d)?.addEventListener('click', () => { $('#fConfirm', d).hidden = true; });
   $('#fYes', d)?.addEventListener('click', async () => {
@@ -1309,7 +1326,7 @@ function openItemSheet(it, opts = {}) {
     e.preventDefault();
     const item = { code: $('#fCode', d).value.trim(), name: $('#fName', d).value.trim(), retail: r2($('#fRetail', d).value), wholesale: r2($('#fWhole', d).value) || 0,
       stock: $('#fStock', d).value.trim() === '' ? '' : r2($('#fStock', d).value), unit: $('#fUnit', d).value, gst: +$('#fGst', d).value, hsn: $('#fHsn', d).value.trim(),
-      wholesale_unit: $('#fWunit', d).value, wholesale_qty: $('#fWunit', d).value ? (+$('#fWqty', d).value > 0 ? +$('#fWqty', d).value : 1) : 1 };
+      nobarcode: $('#fLoose', d).checked, wholesale_unit: $('#fWunit', d).value, wholesale_qty: $('#fWunit', d).value ? (+$('#fWqty', d).value > 0 ? +$('#fWqty', d).value : 1) : 1 };
     const err = m => { $('#fErr', d).textContent = m; };
     if (!item.code && !editing) { genCode = item.code = nextPhoneCode(); $('#fCode', d).value = item.code; bc(); }
     if (!item.code) return err('Add a barcode or short code, for example BLN-50.');
@@ -1330,9 +1347,10 @@ function openItemSheet(it, opts = {}) {
       if (editing && it.code !== item.code) S.items.delete(it.code);
       const n = normItem({ ...item, stock: item.stock === '' ? null : item.stock });
       S.items.set(n.code, n); LS.set('items', [...S.items.values()]);
-      const showLabel = !editing && !opts.fromBill && can('labels');
+      const showLabel = !editing && !opts.fromBill && !n.nobarcode && can('labels');
       closeSheet();
-      if (opts.fromBill) addItem(n);
+      renderLoose();
+      if (opts.fromBill || (opts.loose && S.view === 'bill')) addItem(n);
       else if (showLabel) openLabelSheet(n, { fresh: true });
       else toast('Saved ' + n.name);
       if (S.view === 'items') renderItems();
@@ -1477,7 +1495,7 @@ function drawItemList() {
     : list.slice(0, 300).map(it => `<li><button class="row" type="button" data-code="${esc(it.code)}">
         <span class="nm">${esc(it.name)}</span>
         <span class="rt"><b class="num">${money(it.retail)}</b>${it.wholesale > 0 ? `<div class="hint num">W ${money(it.wholesale)}</div>` : ''}</span>
-        <span class="meta"><span class="num">${esc(it.code)}</span>${stockChip(it)}</span></button></li>`).join('');
+        <span class="meta"><span class="num">${esc(it.code)}</span>${it.nobarcode ? '<span class="chip">No barcode</span>' : ''}${stockChip(it)}</span></button></li>`).join('');
   $('#itemCount').textContent = S.items.size ? `${Math.min(list.length, 300)} of ${list.length} shown · ${S.items.size} items total` : '';
 }
 function downloadText(name, text) {

@@ -199,6 +199,16 @@ html.native-scan .cam{background:transparent}
 html.native-scan .cam video{visibility:hidden}
 .quick{display:flex;gap:6px;overflow-x:auto;padding:0 max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:var(--surface);scrollbar-width:none}
 .quick::-webkit-scrollbar{display:none}
+.loose{display:flex;gap:8px;overflow-x:auto;padding:2px max(12px,env(safe-area-inset-right,0px)) 8px max(12px,env(safe-area-inset-left,0px));background:var(--surface);scrollbar-width:none}
+.loose::-webkit-scrollbar{display:none}
+.loose button{flex:none;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;min-height:48px;min-width:92px;max-width:46vw;border:1.5px solid var(--accent,#4a2fbd);background:var(--bg);color:var(--fg);border-radius:12px;padding:6px 12px;text-align:left}
+.loose button:active{transform:scale(.96);background:color-mix(in srgb,var(--accent,#4a2fbd) 14%,var(--bg))}
+.loose .nm{font-weight:700;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.loose .pr{font-size:.76rem;color:var(--muted)}
+.loose button.new{border-style:dashed;border-color:var(--line)}
+.loose button.new .nm{color:var(--accent,#4a2fbd)}
+label.check{flex-direction:row;align-items:flex-start;gap:10px;background:var(--bg);border-radius:12px;padding:10px 12px;cursor:pointer}
+label.check input{width:22px;height:22px;flex:none;margin-top:2px}
 .quick button{flex:none;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:99px;padding:6px 12px;font-size:.84rem;font-weight:600;white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
 .results .code{color:var(--muted);font-size:.78rem;font-family:var(--f-mono)}
 .results mark{background:rgba(240,168,28,.4);background:color-mix(in srgb,var(--marigold) 40%,transparent);color:inherit;border-radius:3px}
@@ -215,6 +225,7 @@ html.native-scan .cam video{visibility:hidden}
    The camera, search and pay bar used to leave no room for the bill itself on short screens. */
 :root{--camh:min(34vh,300px)}
 @media (max-height:760px){
+  .loose button{min-height:40px;padding:4px 10px}.loose .pr{font-size:.72rem}
   :root{--camh:min(25vh,190px)}
   .topbar{padding-top:calc(4px + env(safe-area-inset-top,0px));padding-bottom:4px}
   .topbar h1{font-size:1.02rem}

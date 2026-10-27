@@ -128,6 +128,7 @@ class Store {
     addCol('items', 'wholesale_unit', "text not null default ''");
     addCol('bills', 'staff', "text not null default ''");
     addCol('items', 'wholesale_qty', 'real not null default 1');
+    addCol('items', 'nobarcode', 'integer not null default 0');
     addCol('bill_lines', 'factor', 'real not null default 1');
     const ins = this.db.prepare('insert or ignore into settings(key,value) values(?,?)');
     for (const [k, v] of Object.entries(DEFAULTS)) ins.run(k, v);
@@ -266,7 +267,7 @@ class Store {
 
   /* ---------- items ---------- */
   allItems() {
-    return this.db.prepare(`select code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn from items where active=1 order by name collate nocase`).all();
+    return this.db.prepare(`select code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,nobarcode from items where active=1 order by name collate nocase`).all();
   }
   getItem(code) { return this.db.prepare('select * from items where code=?').get(String(code)); }
   nextCode() {
@@ -289,6 +290,7 @@ class Store {
       stock: numOrNull(it.stock), min_stock: numOrNull(it.min_stock),
       unit: String(it.unit || 'pcs').trim() || 'pcs', gst, hsn: String(it.hsn ?? '').trim(), now: nowLocal(),
       wholesale_unit: String(it.wholesale_unit || '').trim(), wholesale_qty: +it.wholesale_qty > 0 ? r2(it.wholesale_qty) : 1,
+      nobarcode: it.nobarcode == null ? null : (it.nobarcode && it.nobarcode !== '0' ? 1 : 0), // null = leave as it is
     };
   }
   saveItem(it, oldCode) {
@@ -307,10 +309,10 @@ class Store {
         this.db.prepare('update items set code=? where code=?').run(row.code, oldCode);
         this.db.prepare('update stock_moves set code=? where code=?').run(row.code, oldCode);
       } else if (ex) prevStock = ex.active ? ex.stock : null;
-      this.db.prepare(`insert into items(code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,active,created_at,updated_at)
-        values(@code,@name,@retail,@wholesale,@wholesale_unit,@wholesale_qty,@cost,@stock,@min_stock,@unit,@gst,@hsn,1,@now,@now)
+      this.db.prepare(`insert into items(code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,nobarcode,active,created_at,updated_at)
+        values(@code,@name,@retail,@wholesale,@wholesale_unit,@wholesale_qty,@cost,@stock,@min_stock,@unit,@gst,@hsn,coalesce(@nobarcode,0),1,@now,@now)
         on conflict(code) do update set name=excluded.name, retail=excluded.retail, wholesale=excluded.wholesale, wholesale_unit=excluded.wholesale_unit,
-          wholesale_qty=excluded.wholesale_qty, cost=excluded.cost,
+          wholesale_qty=excluded.wholesale_qty, cost=excluded.cost, nobarcode=coalesce(@nobarcode, items.nobarcode),
           stock=excluded.stock, min_stock=excluded.min_stock, unit=excluded.unit, gst=excluded.gst, hsn=excluded.hsn, active=1, updated_at=excluded.updated_at`).run(row);
       const renamed = !!(oldCode && oldCode !== row.code);
       const isNew = renamed || !ex || !ex.active;
@@ -385,7 +387,7 @@ class Store {
     const it = this.getItem(code);
     if (!it) return { code };
     return { code: it.code, name: it.name, retail: it.retail, wholesale: it.wholesale, wholesale_unit: it.wholesale_unit, wholesale_qty: it.wholesale_qty,
-      cost: it.cost, min_stock: it.min_stock, unit: it.unit, gst: it.gst, hsn: it.hsn, removed: !it.active, stock: withStock ? it.stock : null };
+      cost: it.cost, min_stock: it.min_stock, unit: it.unit, gst: it.gst, hsn: it.hsn, nobarcode: !!it.nobarcode, removed: !it.active, stock: withStock ? it.stock : null };
   }
   itemHistory(code) {
     return this.db.prepare('select qty,kind,ref,at from stock_moves where code=? order by id desc limit 50').all(String(code));
@@ -558,19 +560,20 @@ class Store {
   applyRemoteItems(list) {
     let changed = 0;
     const get = this.db.prepare('select * from items where code=?');
-    const up = this.db.prepare(`insert into items(code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,active,created_at,updated_at)
-      values(@code,@name,@retail,@wholesale,@wholesale_unit,@wholesale_qty,@cost,@stock,@min_stock,@unit,@gst,@hsn,@active,@now,@now)
+    const up = this.db.prepare(`insert into items(code,name,retail,wholesale,wholesale_unit,wholesale_qty,cost,stock,min_stock,unit,gst,hsn,nobarcode,active,created_at,updated_at)
+      values(@code,@name,@retail,@wholesale,@wholesale_unit,@wholesale_qty,@cost,@stock,@min_stock,@unit,@gst,@hsn,@nobarcode,@active,@now,@now)
       on conflict(code) do update set name=excluded.name, retail=excluded.retail, wholesale=excluded.wholesale, wholesale_unit=excluded.wholesale_unit,
         wholesale_qty=excluded.wholesale_qty, cost=excluded.cost, stock=excluded.stock, min_stock=excluded.min_stock, unit=excluded.unit, gst=excluded.gst,
-        hsn=excluded.hsn, active=excluded.active, updated_at=excluded.updated_at`);
+        hsn=excluded.hsn, nobarcode=excluded.nobarcode, active=excluded.active, updated_at=excluded.updated_at`);
     this.db.transaction(() => {
       for (const r of list) {
         const row = { code: String(r.code), name: String(r.name || r.code), retail: r2(r.retail), wholesale: r2(r.wholesale), wholesale_unit: r.wholesale_unit || '',
           wholesale_qty: +r.wholesale_qty > 0 ? +r.wholesale_qty : 1, cost: r2(r.cost), stock: r.stock == null ? null : r2(r.stock), min_stock: r.min_stock == null ? null : r2(r.min_stock),
           unit: r.unit || 'pcs', gst: +r.gst || 0, hsn: r.hsn || '', active: r.removed ? 0 : 1, now: nowLocal() };
         const cur = get.get(row.code);
+        row.nobarcode = r.nobarcode == null ? (cur ? cur.nobarcode || 0 : 0) : (r.nobarcode ? 1 : 0); // older servers don't send it
         if (!cur && !row.active) continue;
-        const same = cur && ['name', 'retail', 'wholesale', 'wholesale_unit', 'wholesale_qty', 'cost', 'stock', 'min_stock', 'unit', 'gst', 'hsn', 'active'].every(k => (cur[k] ?? null) == (row[k] ?? null));
+        const same = cur && ['name', 'retail', 'wholesale', 'wholesale_unit', 'wholesale_qty', 'cost', 'stock', 'min_stock', 'unit', 'gst', 'hsn', 'nobarcode', 'active'].every(k => (cur[k] ?? null) == (row[k] ?? null));
         if (same) continue;
         up.run(row); changed++;
       }
