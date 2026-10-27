@@ -1815,7 +1815,7 @@ async function renderSettings() {
       <div class="err" id="pErr"></div>
       <div class="toolbar"><button type="button" class="btn" id="pSave">${s.hasPin ? 'Change PIN' : 'Set PIN'}</button></div></section>
     </div>
-    <div class="toolbar" style="position:sticky;bottom:0;padding:14px 0 0;background:var(--bg);margin-top:14px"><button type="button" class="btn primary big" id="sSave" style="min-width:220px">Save settings</button><span class="muted small" id="sMsg"></span><span class="muted small" style="margin-left:auto">NRRL Billing v${esc(info.version)}</span></div>
+    <div class="toolbar" style="position:sticky;bottom:0;padding:14px 0 0;background:var(--bg);margin-top:14px"><button type="button" class="btn primary big" id="sSave" style="min-width:220px">Save settings</button><span class="muted small" id="sMsg"></span><span class="muted small" style="margin-left:auto">NRRL Billing v${esc(info.version)}</span><button type="button" class="btn" id="sUpd">Check for updates</button></div>
   </div>`;
   const keys = ['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'bill_prefix', 'next_bill', 'printer', 'paper', 'copies', 'print_margin', 'font_size', 'label_printer', 'label_w', 'label_h', 'low_stock', 'label_across', 'label_gap', 'label_dpi', 'label_bar', 'label_shift', 'label_mode', 'label_vgap', 'label_density', 'label_rate_size', 'bill_format', 'a4_printer', 'pdf_format', 'wa_mode', 'invoice_terms', 'wcode_prefix', 'wcode_mult'];
   const collect = () => {
@@ -1831,6 +1831,7 @@ async function renderSettings() {
   const wEx = () => { const m2 = +$('#s_wcode_mult').value || 2; $('#wcodeEx').textContent = `Example: wholesale ₹45 per dozen prints as ${$('#s_wcode_prefix').value}${Math.round(45 * m2 * 100) / 100}/doz. Only your staff know to read it as ₹45.`; };
   $('#s_wcode_prefix').addEventListener('input', wEx); $('#s_wcode_mult').addEventListener('input', wEx); wEx();
   $('#sSave').addEventListener('click', () => save(false));
+  $('#sUpd').addEventListener('click', () => checkUpdate(true));
   $('#testPrint').addEventListener('click', async () => { if (!(await save(true))) return; rpc('print.test').then(() => toast('Test receipt sent')).catch(err => toast(err.message, { err: true, ms: 9000 })); });
   $('#prevA4').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.a4preview', 'sample'); openModal(`<h2>A4 invoice preview</h2><div style="display:flex;justify-content:center;background:var(--sunk);border-radius:8px;padding:12px;overflow:auto"><iframe title="A4 preview" sandbox srcdoc="${esc(html)}" style="border:0;width:794px;height:70vh;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`, { wide: true }); });
   $('#prevPrint').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.preview', 'sample'); openModal(`<h2>Receipt preview</h2><p class="muted">Paper ${esc(S.settings.paper)} mm. The real print may look slightly different depending on the printer.</p><div style="display:flex;justify-content:center"><iframe title="Receipt preview" sandbox srcdoc="${esc(html)}" style="border:1px solid var(--line);width:${S.settings.paper === '58' ? 240 : 330}px;height:560px;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`); });
@@ -1966,6 +1967,31 @@ async function renderBackupState() {
     $('#backupState').textContent = info.lastBackup ? 'Backed up ' + new Date(info.lastBackup).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : 'No backup yet';
   } catch (e) {}
 }
+
+/* ================= new version ================= */
+const UPD_SNOOZE = 8 * 3600e3;
+async function checkUpdate(manual) {
+  const box = $('#updBox'); if (!box) return;
+  let u;
+  try { u = await rpc('app.checkUpdate'); } catch (e) { if (manual) toast(e.message, true); return; }
+  if (!u || !u.available) { box.hidden = true; if (manual) toast(`You have the newest version (${u && u.current || ''})`); return; }
+  const snooze = LS.get('updSnooze', null);
+  if (!manual && snooze && snooze.v === u.version && Date.now() - snooze.t < UPD_SNOOZE) return;
+  box.hidden = false;
+  box.innerHTML = `<div><b>New version ${esc(u.version)}</b><br><span class="muted">You have ${esc(u.current)}. Bills, items and any open bill stay as they are.</span></div>
+    <div class="row2"><button type="button" class="btn primary" id="updNow">Update now</button><button type="button" class="btn" id="updLater">Later</button></div>
+    <div class="muted small" id="updMsg"></div>`;
+  $('#updLater', box).addEventListener('click', () => { LS.set('updSnooze', { v: u.version, t: Date.now() }); box.hidden = true; });
+  $('#updNow', box).addEventListener('click', async () => {
+    $('#updNow', box).disabled = true; $('#updLater', box).disabled = true;
+    $('#updMsg', box).textContent = 'Starting download…';
+    try { await rpc('app.installUpdate'); $('#updMsg', box).textContent = 'The app will close now. Click through the installer, then open NRRL Billing again.'; }
+    catch (e) { $('#updMsg', box).textContent = e.message; $('#updNow', box).disabled = false; $('#updLater', box).disabled = false; }
+  });
+}
+window.api.on && window.api.on('update-progress', msg => { const m = $('#updMsg'); if (m) m.textContent = msg; });
+setTimeout(() => checkUpdate(false), 8000);
+setInterval(() => checkUpdate(false), 6 * 3600e3);
 
 /* ================= start ================= */
 window.api.on && window.api.on('link-progress', msg => { const p = $('#lkProg'); if (p) p.textContent = msg; });

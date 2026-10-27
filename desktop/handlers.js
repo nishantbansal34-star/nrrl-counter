@@ -61,6 +61,8 @@ function makeHandlers(ctx) {
     'purchases.get': id => st().getPurchase(id),
     'purchases.cancel': id => st().cancelPurchase(id),
     'audit.list': q => st().auditList(q || {}),
+    'app.checkUpdate': () => ctx.checkUpdate ? ctx.checkUpdate() : { available: false },
+    'app.installUpdate': () => { if (!ctx.installUpdate) throw new Error('Updates are not available here.'); return ctx.installUpdate(); },
     'app.openUrl': url => { if (!/^https:\/\/(wa\.me|api\.whatsapp\.com)\//.test(String(url))) throw new Error('Not allowed.'); return ctx.openUrl ? ctx.openUrl(url) : false; },
     'auth.state': () => ({ linked: !!st().getSetting('link_key'), staff: st().staffList().filter(x => x.active).map(x => ({ id: x.id, name: x.name, role: x.role })), user, ownerUntil }),
     'auth.login': async (id, pin) => {

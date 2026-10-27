@@ -1,6 +1,7 @@
 /* NRRL Counter — fast barcode billing. Data lives in Supabase (schema "counter"), reached only through PIN-session RPCs. */
 (() => {
 'use strict';
+const APP_BUILD = 0; // set to the build number when the Android app is built
 const CFG = {
   url: 'https://nbsrlpubmukksdpusxpx.supabase.co',
   key: 'sb_publishable_-b7urbpGemxGRtC-__5cyw_LB1j3lRR',
@@ -594,6 +595,7 @@ function showApp(view) {
   $('#app').innerHTML = `
     <header class="topbar"><h1>NRRL Counter</h1>
       <div class="who"><button class="themebtn" id="themeBtn" type="button"></button><button class="btn sm" id="installBtn" hidden>Install app</button><span class="net${netOk ? '' : ' off'}" id="net"></span><b id="whoName"></b><button class="btn sm" id="logoutBtn">Log out</button></div></header>
+    <div class="banner upd" id="updBanner" hidden></div>
     <div class="banner" id="pendBanner" hidden></div>
     <main id="main">
       <section id="v-bill"></section>
@@ -604,6 +606,7 @@ function showApp(view) {
     </main>
     <nav class="tabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}">${svg(ICON[k === 'bills' ? 'bills' : k])}${l}</button>`).join('')}</nav>`;
   renderWho();
+  showUpdate();
   $('#logoutBtn').addEventListener('click', () => { Scanner.stop(); Native.stop(); logout(false); });
   const THEMES = { light: 'Light', dark: 'Dark', auto: 'Auto' }, TICON = { light: '☀', dark: '☾', auto: '◐' };
   const drawTheme = () => { const t = document.documentElement.dataset.theme || 'light'; $('#themeBtn').textContent = TICON[t] || '☀'; $('#themeBtn').setAttribute('aria-label', 'Theme: ' + THEMES[t]); };
@@ -1235,6 +1238,38 @@ function nextPhoneCode(after) {
   if (after) { const m = /^NR(\d+)$/.exec(after); if (m && +m[1] > n) n = +m[1]; }
   return 'NR' + (n + 1);
 }
+
+/* ---------------- new version of the Android app ----------------
+   Each build carries its number; the newest one's number is in the GitHub release notes ("Build: N"). */
+const APK_URL = 'https://github.com/nishantbansal34-star/nrrl-counter/releases/download/latest/nrrl-counter.apk';
+let updInfo = null, updChecked = 0;
+async function checkAppUpdate() {
+  if (!APP_BUILD || !(window.NrrlNative && window.NrrlNative.native)) return; // the web version updates itself
+  if (Date.now() - updChecked < 3 * 3600e3) return showUpdate();
+  updChecked = Date.now();
+  try {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const t = ctl && setTimeout(() => ctl.abort(), 10000);
+    const r = await fetch('https://api.github.com/repos/nishantbansal34-star/nrrl-counter/releases/tags/latest', { signal: ctl ? ctl.signal : undefined });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const m = /Build:\s*(\d+)/.exec((await r.json()).body || '');
+    updInfo = m && +m[1] > APP_BUILD ? { build: +m[1] } : null;
+  } catch (e) { return; }
+  showUpdate();
+}
+function showUpdate() {
+  const b = $('#updBanner'); if (!b) return;
+  const snooze = LS.get('updSnooze', null);
+  if (!updInfo || (snooze && snooze.b === updInfo.build && Date.now() - snooze.t < 8 * 3600e3)) { b.hidden = true; return; }
+  b.hidden = false;
+  b.innerHTML = `<span><b>New version of the app is ready.</b> Download it, then open the file to install. Bills and items stay.</span>
+    <span class="acts"><a class="btn sm primary" href="${APK_URL}" target="_blank" rel="noopener" id="updGet">Download</a><button type="button" class="btn sm" id="updLater">Later</button></span>`;
+  $('#updLater', b).addEventListener('click', () => { LS.set('updSnooze', { b: updInfo.build, t: Date.now() }); b.hidden = true; });
+  $('#updGet', b).addEventListener('click', () => { setTimeout(() => toast('Downloading… open it from the notification when it finishes.'), 300); });
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.token) checkAppUpdate(); });
+setTimeout(() => checkAppUpdate(), 4000);
 
 /* ---------------- sheets ---------------- */
 function openSheet(id, html, onClose) {

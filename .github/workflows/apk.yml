@@ -28,6 +28,9 @@ jobs:
         run: |
           mkdir -p shell/www
           cp index.html app.js manifest.webmanifest icon-192.png icon-512.png shell/www/
+          # stamp this build's number into the app, so it can tell when a newer one is out
+          sed -i 's/const APP_BUILD = 0;/const APP_BUILD = ${{ github.run_number }};/' shell/www/app.js
+          grep -c "const APP_BUILD = ${{ github.run_number }};" shell/www/app.js
           # bundle the barcode library so scanning works without the CDN
           curl -sSL https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js -o shell/www/zxing.min.js
           sed -i 's#https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js#zxing.min.js#' shell/www/index.html
@@ -123,4 +126,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest nrrl-counter.apk --title "NRRL Counter (latest)" --notes "Install on Android: download nrrl-counter.apk and open it. Allow 'Install unknown apps' if asked."
+          # the app reads "Build: N" from these notes to tell people a new version is ready
+          printf "Install on Android: download nrrl-counter.apk and open it. Allow 'Install unknown apps' if asked.\n\nBuild: %s\n" "${{ github.run_number }}" > notes.txt
+          gh release create latest nrrl-counter.apk --title "NRRL Counter build ${{ github.run_number }}" --notes-file notes.txt

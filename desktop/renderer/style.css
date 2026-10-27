@@ -244,3 +244,9 @@ table.grid tr.warnrow td:nth-child(3) { color: var(--bad); font-weight: 600; }
 .names.pick button { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 14px 12px; font-size: 16px; font-weight: 700; display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
 .names.pick button:hover { border-color: var(--accent); background: var(--accent-soft); }
 .names.pick small { font-size: 12px; font-weight: 500; color: var(--muted); }
+
+/* new version notice in the side rail */
+.updbox { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.updbox b { color: var(--accent); }
+.updbox .row2 { display: flex; gap: 6px; }
+.updbox .btn { padding: 5px 10px; font-size: 12px; flex: 1; }

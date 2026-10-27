@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('api', {
     return r.data;
   },
   on: (channel, cb) => {
-    if (!['data-changed', 'link-progress'].includes(channel)) return;
+    if (!['data-changed', 'link-progress', 'update-progress'].includes(channel)) return;
     ipcRenderer.on(channel, (e, data) => cb(data));
   },
 });

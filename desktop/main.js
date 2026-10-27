@@ -1,6 +1,6 @@
 // NRRL Billing — Electron main process: window, database, printing, backups
 'use strict';
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, net } = require('electron');
 const { createSync } = require('./sync');
 const { createLink } = require('./link');
 const path = require('path');
@@ -96,6 +96,50 @@ async function chooseExtraFolder() {
   return r.filePaths[0];
 }
 
+/* ---------- updates: the newest laptop app is on GitHub (release "desktop-latest", notes say "Version: x.y.z") ---------- */
+const REPO = 'nishantbansal34-star/nrrl-counter';
+const SETUP_URL = `https://github.com/${REPO}/releases/download/desktop-latest/NRRL-Billing-Setup.exe`;
+let pendingInstaller = null, updating = false;
+const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+async function checkUpdate() {
+  const r = await net.fetch(`https://api.github.com/repos/${REPO}/releases/tags/desktop-latest`, { headers: { 'User-Agent': 'NRRL-Billing', Accept: 'application/vnd.github+json' } });
+  if (!r.ok) throw new Error('Could not check for updates (' + r.status + ').');
+  const rel = await r.json();
+  const m = /Version:\s*(\d+\.\d+\.\d+)/.exec(rel.body || '');
+  const current = app.getVersion();
+  if (!m) return { available: false, current };
+  return { available: newer(m[1], current), version: m[1], current, date: rel.published_at };
+}
+async function installUpdate(progress) {
+  if (updating) throw new Error('The update is already downloading.');
+  updating = true;
+  try {
+    const r = await net.fetch(SETUP_URL, { headers: { 'User-Agent': 'NRRL-Billing' } });
+    if (!r.ok || !r.body) throw new Error('Could not download the update (' + r.status + ').');
+    const total = +r.headers.get('content-length') || 0;
+    const file = path.join(app.getPath('temp'), 'NRRL-Billing-Setup-update.exe');
+    const out = fs.createWriteStream(file);
+    let got = 0, lastPct = -1;
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      got += value.length;
+      if (!out.write(Buffer.from(value))) await new Promise(res => out.once('drain', res));
+      const pct = total ? Math.floor(got * 100 / total) : -1;
+      if (pct !== lastPct) { lastPct = pct; progress && progress(pct >= 0 ? `Downloading… ${pct}%` : `Downloading… ${(got / 1048576).toFixed(0)} MB`); }
+    }
+    await new Promise((res, rej) => out.end(err => err ? rej(err) : res()));
+    if (got < 5 * 1048576 || (total && got !== total)) throw new Error('The download did not finish. Try again.');
+    const head = Buffer.alloc(2); const fd = fs.openSync(file, 'r'); fs.readSync(fd, head, 0, 2, 0); fs.closeSync(fd);
+    if (head.toString() !== 'MZ') throw new Error('The downloaded file is not the installer. Try again later.');
+    pendingInstaller = file;
+    progress && progress('Closing to install…');
+    setTimeout(() => app.quit(), 800);
+    return true;
+  } finally { updating = false; }
+}
+
 function setupIPC() {
   const H = makeHandlers({
     getStore: () => store,
@@ -127,6 +171,8 @@ function setupIPC() {
       await shell.openExternal('https://web.whatsapp.com/send?' + q);
     },
     showFile: file => { shell.showItemInFolder(file); return true; },
+    checkUpdate,
+    installUpdate: () => installUpdate(msg => { if (win && !win.isDestroyed()) win.webContents.send('update-progress', msg); }),
   });
   ipcMain.handle('rpc', async (e, method, args) => {
     const fn = H[method];
@@ -225,3 +271,8 @@ app.on('before-quit', e => {
   (dirty ? backupNow('exit') : Promise.resolve()).catch(() => {}).finally(() => { clearTimeout(t); store.close(); app.quit(); });
 });
 app.on('window-all-closed', () => app.quit());
+// a downloaded update starts once this app has closed (after its exit backup), so the installer can replace it
+app.on('quit', () => {
+  if (!pendingInstaller) return;
+  try { require('child_process').spawn(pendingInstaller, [], { detached: true, stdio: 'ignore' }).unref(); } catch (e) {}
+});

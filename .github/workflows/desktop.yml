@@ -77,4 +77,7 @@ jobs:
         working-directory: .
         run: |
           gh release delete desktop-latest --yes --cleanup-tag || true
-          gh release create desktop-latest NRRL-Billing-Setup.exe --title "NRRL Billing for Windows (latest)" --notes "Download NRRL-Billing-Setup.exe and run it. If Windows shows 'Windows protected your PC', click More info → Run anyway."
+          V=$(node -p "require('./desktop/package.json').version")
+          # the app reads "Version: x.y.z" from these notes to tell people a new version is ready
+          printf "Download NRRL-Billing-Setup.exe and run it. If Windows shows 'Windows protected your PC', click More info → Run anyway.\n\nVersion: %s\n" "$V" > notes.txt
+          gh release create desktop-latest NRRL-Billing-Setup.exe --title "NRRL Billing for Windows $V" --notes-file notes.txt
