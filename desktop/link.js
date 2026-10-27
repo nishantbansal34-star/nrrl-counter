@@ -45,6 +45,7 @@ function createLink(getStore, onChange) {
     if (r.kind === 'bill') return rpc('counter_dev_bill_push', { p_key: key, p_bill: p });
     if (r.kind === 'cancel') return rpc('counter_dev_bill_cancel', { p_key: key, p_bill_no: p.bill_no });
     if (r.kind === 'stock') return rpc('counter_dev_stock_add', { p_key: key, p_code: p.code, p_delta: p.delta });
+    if (r.kind === 'ledger') return rpc('counter_dev_ledger_put', { p_key: key, p_kind: p.k, p_data: p.d });
   }
   async function pushQueue(st, key) {
     for (let round = 0; round < 40; round++) {
@@ -70,6 +71,10 @@ function createLink(getStore, onChange) {
         }
         try { await sendOne(key, r); st.linkDone([r.id]); }
         catch (e) {
+          // an older server can't keep udhaar/returns/purchases yet: drop them for now, they are sent again once it can
+          if (r.kind === 'ledger' && !e.net && /counter_dev_ledger_put|PGRST202|Could not find|404/i.test(String(e.message) + String(e.code))) {
+            st.linkDone([r.id]); st.setSetting('ledger_sent', '0'); state.ledgerOk = false; i++; continue;
+          }
           st.linkFail([r.id], e.message);
           if (!e.net && r.tries + 1 >= GIVE_UP) { setAside(st, [r], e); i++; continue; }
           throw e;
@@ -104,7 +109,21 @@ function createLink(getStore, onChange) {
         st.setSetting('link_voided_at', v.now);
       } catch (e) { if (e.net) throw e; if (/counter_dev_bills_voided|PGRST202|Could not find|404/i.test(String(e.message) + String(e.code))) state.voidedOk = false; }
     }
-    if (changed || newBills || voided) onChange({ items: changed, bills: newBills, voided });
+    // udhaar payments, returns, suppliers and purchases recorded on the other laptops and the phone app
+    let ledger = 0;
+    if (st.linkCount() === 0 && state.ledgerOk !== false) {
+      try {
+        for (let round = 0; round < 20; round++) {
+          const rows = await rpc('counter_dev_ledger_since', { p_key: key, p_after: parseInt(st.getSetting('ledger_after'), 10) || 0 });
+          if (!rows.length) break;
+          const r = st.applyLedger(rows);
+          ledger += r.applied;
+          if (r.upto != null) st.setSetting('ledger_after', String(r.upto));
+          if (r.applied < rows.length || rows.length < 500) break; // stopped early: a return waits for its bill
+        }
+      } catch (e) { if (e.net) throw e; if (/counter_dev_ledger_since|PGRST202|Could not find|404/i.test(String(e.message) + String(e.code))) state.ledgerOk = false; else throw e; }
+    }
+    if (changed || newBills || voided || ledger) onChange({ items: changed, bills: newBills, voided, ledger });
   }
   // give each laptop its own bill numbers (L2-1, L2-2…) so two laptops never clash
   function useCode(st, code) {
@@ -126,6 +145,7 @@ function createLink(getStore, onChange) {
     state.busy = true;
     try {
       if (!st.getSetting('link_code')) { try { useCode(st, (await rpc('counter_dev_info', { p_key: key })).code); } catch (e) { if (e.code === 'DEVICE_UNLINKED') throw e; } }
+      if (state.ledgerOk !== false) st.ledgerBackfill();
       await pushQueue(st, key);
       await pull(st, key);
       if (Date.now() - lastStaff > 30000) await syncStaff(st, key);

@@ -179,6 +179,7 @@ function setupIPC() {
     if (!fn) return { ok: false, error: 'Unknown action: ' + method };
     try {
       const data = await fn(...(Array.isArray(args) ? args : []));
+      if (/^(customers|payments|returns|suppliers|purchases)\./.test(method)) store.setSetting('ledger_dirty', '1');
       if (WRITES.has(method)) { dirty = true; if (method.startsWith('items.')) store.setSetting('items_dirty', '1'); sync.soon(); link.soon(); }
       return { ok: true, data };
     } catch (err) {

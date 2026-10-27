@@ -87,24 +87,36 @@ jobs:
           cp -r ../android-icons/mipmap-* $R/
           sed -i 's#<color name="ic_launcher_background">.*</color>#<color name="ic_launcher_background">\#4a2fbd</color>#' $R/values/ic_launcher_background.xml || true
 
-      - name: Use the same signing key every time (so updates install over the old app)
+      - name: Signing key (the private key once the owner has added the two ANDROID_KEYSTORE secrets)
         working-directory: shell
+        env:
+          NRRL_KS_PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          NRRL_KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
-          KS="$GITHUB_WORKSPACE/android-signing/nrrl.keystore"
-          python3 - "$KS" <<'PY'
-          import sys, re
-          ks = sys.argv[1]
+          if [ -n "$NRRL_KS_PW" ] && [ -n "$NRRL_KS_B64" ]; then
+            # private key: kept only in the repository secrets, written to the build machine for this build
+            KS="$RUNNER_TEMP/nrrl-release.jks"; echo "$NRRL_KS_B64" | base64 -d > "$KS"; ALIAS=nrrl; PWEXPR='System.getenv("NRRL_KS_PW")'
+            echo "::notice::Signing with the private release key"
+          else
+            KS="$GITHUB_WORKSPACE/android-signing/nrrl.keystore"; ALIAS=androiddebugkey; PWEXPR='"android"'
+            echo "::warning::ANDROID_KEYSTORE secrets not set: signing with the old shared key"
+          fi
+          python3 - "$KS" "$ALIAS" "$PWEXPR" <<'PY'
+          import sys
+          ks, alias, pw = sys.argv[1], sys.argv[2], sys.argv[3]
           p = 'android/app/build.gradle'
           s = open(p).read()
-          cfg = ('    signingConfigs {\n        nrrl {\n            storeFile file("%s")\n            storePassword "android"\n'
-                 '            keyAlias "androiddebugkey"\n            keyPassword "android"\n        }\n    }\n' % ks)
+          cfg = ('    signingConfigs {\n        nrrl {\n            storeFile file("%s")\n            storePassword %s\n'
+                 '            keyAlias "%s"\n            keyPassword %s\n        }\n    }\n' % (ks, pw, alias, pw))
           s = s.replace('    buildTypes {', cfg + '    buildTypes {\n        debug {\n            signingConfig signingConfigs.nrrl\n        }', 1)
           open(p, 'w').write(s)
           PY
-          grep -n "signingConfig" android/app/build.gradle
+          grep -n "signingConfig\|storeFile\|keyAlias" android/app/build.gradle
 
       - name: Build APK
         working-directory: shell
+        env:
+          NRRL_KS_PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           set -o pipefail
           report() { msg=$(tail -c 3500 "$1" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g'); echo "::error title=$2::$msg"; exit 1; }

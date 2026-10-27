@@ -16,16 +16,17 @@ function doPost(e) {
       if (ev.type === 'bill') addBill(ss, ev.bill);
       else if (ev.type === 'cancel') cancelBill(ss, ev.bill_no);
       else if (ev.type === 'items') writeItems(ss, ev.items || [], ev.at);
+      else if (ev.type === 'table') writeTable(ss, ev.name, ev.header || [], ev.rows || [], ev.at);
       done++;
     }
-    return out({ ok: true, done });
+    return out({ ok: true, done, v: 2 });
   } catch (err) {
     return out({ ok: false, error: String(err && err.message || err) });
   } finally {
     lock.releaseLock();
   }
 }
-function doGet() { return out({ ok: true, app: 'NRRL Billing sheet' }); }
+function doGet() { return out({ ok: true, app: 'NRRL Billing sheet', v: 2 }); }
 function out(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
 
 const H = {
@@ -109,4 +110,19 @@ function writeItems(ss, items, at) {
   if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 10).clearContent();
   if (rows.length) sh.getRange(2, 1, rows.length, 10).setValues(rows);
   sh.getRange(1, 12).setValue('Updated ' + (at || ''));
+}
+// a whole tab written fresh each time: Udhaar, Payments, Returns, Purchases, Suppliers
+const TABLES = ['Udhaar', 'Payments', 'Returns', 'Purchases', 'Suppliers'];
+function writeTable(ss, name, header, rows, at) {
+  if (TABLES.indexOf(name) < 0 || !header.length) return;
+  let sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.setFrozenRows(1);
+  }
+  sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#ece8fb');
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, Math.max(sh.getLastColumn(), header.length)).clearContent();
+  const clean = rows.map(r => header.map((_, i) => r[i] == null ? '' : r[i]));
+  if (clean.length) sh.getRange(2, 1, clean.length, header.length).setValues(clean);
+  sh.getRange(1, header.length + 2).setValue('Updated ' + (at || ''));
 }

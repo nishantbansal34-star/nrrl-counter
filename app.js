@@ -50,6 +50,7 @@ const ERR = {
   CART_GONE: 'That bill was already saved or closed.',
   CANT_BILL: 'That person can’t make bills (switched off, or blocked).',
   NO_ACCESS: 'You don’t have access to this. Ask the owner.',
+  NO_CUSTOMER: 'This customer has no udhaar account.',
   'Request timed out': 'The internet is too slow right now. Try again.',
 };
 class ApiError extends Error { constructor(code, net) { super(ERR[code] || code); this.code = code; this.net = !!net; } }
@@ -1450,10 +1451,14 @@ function rangeDates(r) {
   if (r === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1), null];
   return [d0, null];
 }
+let salesTab = 'bills';
+const salesTabs = () => `<div class="seg" id="salesTab" style="margin-bottom:12px">${[['bills', 'Bills'], ['udhaar', 'Udhaar accounts']].map(([k, l]) => `<button type="button" data-st="${k}" aria-pressed="${salesTab === k}">${l}</button>`).join('')}</div>`;
+function bindSalesTabs() { $('#salesTab')?.addEventListener('click', e => { const b = e.target.closest('[data-st]'); if (!b || b.dataset.st === salesTab) return; salesTab = b.dataset.st; renderBills(true); }); }
 async function renderBills(reload) {
   const el = $('#v-bills');
   const own = can('reports');
   if (!can('sales')) { el.innerHTML = '<div class="page"><div class="empty"><b>Sales are switched off for you</b></div></div>'; return; }
+  if (salesTab === 'udhaar') return renderUdhaar(reload);
   if (reload) {
     el.innerHTML = `<div class="page"><p class="hint">Loading sales…</p></div>`;
     try { await loadSalesPage(true); }
@@ -1463,7 +1468,7 @@ async function renderBills(reload) {
   const by = k => { const m = {}; live.forEach(b => { m[b[k]] = (m[b[k]] || 0) + +b.total; }); return m; };
   const total = salesSum ? +salesSum.total : live.reduce((s, b) => s + +b.total, 0), count = salesSum ? +salesSum.count : live.length;
   const pay = salesSum ? salesSum.by_payment || {} : by('payment'), staff = salesSum ? salesSum.by_staff || {} : by('staff_name');
-  el.innerHTML = `<div class="page">
+  el.innerHTML = `<div class="page">${salesTabs()}
     <div class="ph"><h2>${own ? 'Sales' : 'Today’s sales'}</h2>
       <div style="display:flex;gap:8px;flex-wrap:wrap">${own ? `<div class="seg" id="rangeSeg">${[['today', 'Today'], ['yesterday', 'Yesterday'], ['week', '7 days'], ['month', 'Month']].map(([k, l]) => `<button type="button" data-r="${k}" aria-pressed="${billRange === k}">${l}</button>`).join('')}</div><button class="btn sm" id="expBills">Download CSV</button>` : ''}<button class="btn sm" id="refBills">Refresh</button></div></div>
     <div class="stats">
@@ -1484,11 +1489,80 @@ async function renderBills(reload) {
     try { await loadSalesPage(false); renderBills(false); window.scrollTo(0, y); }
     catch (ex) { btn.disabled = false; btn.textContent = 'Show more bills'; toast(ex.message, true); }
   });
+  bindSalesTabs();
   $('#rangeSeg')?.addEventListener('click', e => { const b = e.target.closest('[data-r]'); if (!b) return; billRange = b.dataset.r; openBill = null; renderBills(true); });
   $('#refBills').addEventListener('click', () => renderBills(true));
   $('#expBills')?.addEventListener('click', exportBills);
   $('#billList').addEventListener('click', onBillClick);
 }
+/* ---------------- udhaar accounts (shared with every laptop) ---------------- */
+let udhaar = [], udhaarQ = '';
+const fmtAt = t => { const d = new Date(String(t).replace(' ', 'T')); return isNaN(d) ? String(t) : d.toLocaleString('en-IN', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }); };
+async function renderUdhaar(reload) {
+  const el = $('#v-bills');
+  if (reload || !udhaar.length) {
+    el.innerHTML = `<div class="page">${salesTabs()}<p class="hint">Loading udhaar accounts…</p></div>`; bindSalesTabs();
+    try { udhaar = await api('counter_udhaar', { p_token: S.token }); }
+    catch (e) { el.innerHTML = `<div class="page">${salesTabs()}<p class="err">${esc(/counter_udhaar|PGRST202|Could not find|404/.test(e.message + e.code) ? 'Udhaar accounts need the latest server update.' : e.message)}</p><button class="btn" id="rl">Try again</button></div>`; bindSalesTabs(); $('#rl').addEventListener('click', () => renderUdhaar(true)); return; }
+  }
+  const owe = udhaar.filter(c => c.balance > 0.009);
+  el.innerHTML = `<div class="page">${salesTabs()}
+    <div class="stats"><div class="stat"><div class="lbl">To collect</div><div class="v">${money(owe.reduce((a, c) => a + +c.balance, 0))}</div></div><div class="stat"><div class="lbl">Customers</div><div class="v">${owe.length}</div></div></div>
+    <div style="display:flex;gap:8px;margin-bottom:10px"><input type="search" id="udQ" placeholder="Search name or phone" value="${esc(udhaarQ)}" style="flex:1"><button class="btn sm" id="udRef">Refresh</button></div>
+    <ul class="list" id="udList"></ul>
+    <p class="hint" style="margin-top:10px">The same accounts as on the laptops. Udhaar bills, payments and returns from every phone and laptop are counted.</p></div>`;
+  bindSalesTabs();
+  const draw = () => {
+    const q = udhaarQ.trim().toLowerCase();
+    const list = udhaar.filter(c => !q || String(c.name).toLowerCase().includes(q) || String(c.phone).includes(q));
+    $('#udList').innerHTML = list.length ? list.map(c => `<li><button class="row" type="button" data-uk="${esc(c.key)}"><span class="nm">${esc(c.name)}</span><span class="rt num" style="font-weight:700;color:${c.balance > 0 ? 'var(--bad)' : 'var(--ok, inherit)'}">${money(c.balance)}</span>
+      <span class="meta">${c.phone ? `<span class="num">${esc(c.phone)}</span>` : ''}${c.last_at ? `<span>last ${esc(fmtAt(c.last_at))}</span>` : ''}${c.balance < -0.009 ? '<span class="chip acc">Advance</span>' : ''}</span></button></li>`).join('')
+      : `<li class="empty"><b>${udhaar.length ? 'Nothing matches' : 'No udhaar'}</b>${udhaar.length ? '' : 'Bills paid by Udhaar show up here with what each customer owes.'}</li>`;
+  };
+  draw();
+  $('#udQ').addEventListener('input', e => { udhaarQ = e.target.value; draw(); });
+  $('#udRef').addEventListener('click', () => renderUdhaar(true));
+  $('#udList').addEventListener('click', e => { const b = e.target.closest('[data-uk]'); if (b) openUdhaar(b.dataset.uk); });
+}
+async function openUdhaar(key) {
+  const d = openSheet('udSheet', `<p class="hint">Loading…</p>`);
+  let acc;
+  try { acc = await api('counter_udhaar_account', { p_token: S.token, p_key: key }); } catch (e) { $('.card', d).innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+  const c = acc.customer || { name: key, phone: '', opening: 0, balance: 0 };
+  let bal = +c.opening || 0;
+  const rows = (acc.rows || []).map(r => { bal = r2(bal + (r.kind === 'bill' ? +r.amount : -r.amount)); return { ...r, bal }; }).reverse();
+  const remind = c.phone && c.balance > 0 ? waUrl(c.phone, `Namaste ${c.name} ji, your pending balance at ${CFG.shop} is ₹${r2(c.balance)}. Please pay at your convenience. Thank you!`) : '';
+  $('.card', d).innerHTML = `
+    <h3>${esc(c.name)}</h3>
+    <p class="s">${c.phone ? esc(c.phone) + ' · ' : ''}${c.balance > 0.009 ? 'Owes' : c.balance < -0.009 ? 'Advance' : 'Settled'} <b class="num">${money(Math.abs(c.balance))}</b></p>
+    ${can('bill') ? `<form id="udPay" class="grid2" novalidate style="margin-top:12px">
+      <div class="field"><label class="lbl" for="upAmt">Received ₹</label><input type="number" inputmode="decimal" id="upAmt" placeholder="${c.balance > 0 ? r2(c.balance) : ''}"></div>
+      <div class="field"><span class="lbl">By</span><div class="seg" id="upMode"><button type="button" data-m="cash" aria-pressed="true">Cash</button><button type="button" data-m="upi" aria-pressed="false">UPI</button></div></div>
+      <div class="field w"><input type="text" id="upNote" placeholder="Note (optional)"></div>
+      <p class="err w" id="upErr" style="text-align:left"></p>
+      <button class="btn primary w" type="submit">Save payment</button></form>` : ''}
+    <div class="acts2" style="margin-top:8px">${remind ? `<a class="btn" href="${esc(remind)}" target="_blank" rel="noopener">WhatsApp reminder</a>` : ''}<button class="btn${remind ? '' : ' w'}" type="button" id="udClose">Close</button></div>
+    <h4 style="margin:16px 0 6px">Account</h4>
+    <ul class="list">${+c.opening ? `` : ''}${rows.map(r => `<li class="stmt"><span>${r.kind === 'bill' ? `Udhaar bill ${esc(r.ref)}` : r.kind === 'payment' ? `Paid · ${esc(String(r.ref).toUpperCase())}${r.note ? ' · ' + esc(r.note) : ''}` : `Return ${esc(r.ref)}`}<br><span class="hint">${esc(fmtAt(r.at))}${r.staff ? ' · ' + esc(r.staff) : ''}</span></span>
+      <span class="num" style="text-align:right">${r.kind === 'bill' ? '+' : '−'}${money(r.amount)}<br><span class="hint">${money(r.bal)}</span></span></li>`).join('')}
+      ${+c.opening ? `<li class="stmt"><span>Opening balance</span><span class="num">${money(c.opening)}</span></li>` : ''}</ul>`;
+  $('#udClose', d).addEventListener('click', closeSheet);
+  let mode = 'cash';
+  $('#upMode', d)?.addEventListener('click', e => { const b = e.target.closest('[data-m]'); if (!b) return; mode = b.dataset.m; $$('#upMode button', d).forEach(x => x.setAttribute('aria-pressed', x === b)); });
+  const payId = 'ph-' + uid();
+  $('#udPay', d)?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const amt = r2($('#upAmt', d).value);
+    if (!(amt > 0)) { $('#upErr', d).textContent = 'Enter the amount received.'; return; }
+    const btn = $('#udPay button[type=submit]', d); btn.disabled = true;
+    try {
+      await api('counter_udhaar_pay', { p_token: S.token, p_key: key, p_amount: amt, p_mode: mode, p_note: $('#upNote', d).value.trim(), p_uid: payId });
+      toast(`Saved ₹${amt} from ${c.name}`); closeSheet(); renderUdhaar(true);
+    } catch (ex) { $('#upErr', d).textContent = ex.message; btn.disabled = false; }
+  });
+}
+function waUrl(phone, text) { let p = String(phone || '').replace(/\D/g, ''); if (p.length === 10) p = '91' + p; return 'https://wa.me/' + p + '?text=' + encodeURIComponent(text); }
+
 function billRow(b) {
   const d = new Date(b.created_at), open = openBill === b.id;
   return `<li><button class="row" type="button" data-open="${b.id}" aria-expanded="${open}">

@@ -63,6 +63,8 @@ function migrateLedger(st) {
   `);
   const addCol = (t, c, def) => { if (!st.db.prepare(`pragma table_info(${t})`).all().some(r => r.name === c)) st.db.exec(`alter table ${t} add column ${c} ${def}`); };
   addCol('bills', 'customer_id', 'integer');
+  // shared with the other laptops and the phone app: every record gets an id that is unique across devices
+  for (const t of ['payments', 'returns', 'purchases', 'supplier_payments']) { addCol(t, 'uid', 'text'); st.db.exec(`create unique index if not exists ${t}_uid on ${t}(uid)`); }
   addCol('bills', 'returned', 'real not null default 0');
   st.db.exec('create index if not exists bills_customer on bills(customer_id)'); // after the column exists on older files
   // udhaar bills made before accounts existed get their customer
@@ -72,6 +74,7 @@ function migrateLedger(st) {
   }
 }
 
+const supKey = name => String(name || '').trim().toLowerCase().replace(/\s+/g, ' ');
 const methods = {
   /* ---------- change log ---------- */
   audit(action, ref, detail) {
@@ -111,7 +114,7 @@ const methods = {
     const rows = this.db.prepare(`select c.*, round(${this._balanceSql()},2) balance,
         (select max(b.created_at) from bills b where b.customer_id=c.id) last_bill,
         (select max(p.created_at) from payments p where p.customer_id=c.id and p.cancelled=0) last_payment
-      from customers c order by balance desc, c.name collate nocase limit 5000`).all();
+      from customers c where c.key not like 'merged:%' order by balance desc, c.name collate nocase limit 5000`).all();
     if (!q) return rows;
     const s = String(q).toLowerCase();
     return rows.filter(c => c.name.toLowerCase().includes(s) || c.phone.includes(s));
@@ -150,6 +153,7 @@ const methods = {
     const ch = [];
     for (const k of ['name', 'phone', 'gstin', 'opening']) if (String(c[k]) !== String(k === 'opening' ? opening : k === 'gstin' ? clean(p.gstin, 20).toUpperCase() : k === 'name' ? name : phone)) ch.push(`${k}: ${c[k]} → ${k === 'opening' ? opening : p[k]}`);
     if (ch.length) this.audit('customer.edit', name, ch.join('; '));
+    this.linkPush('ledger', { k: 'customer', d: this._custPayload(id, c.key !== key ? c.key : '') });
     return this.customer(id);
   },
   addCustomer(p) {
@@ -169,6 +173,7 @@ const methods = {
     mode = MODES.includes(mode) ? mode : 'cash';
     const id = this.db.prepare('insert into payments(customer_id,amount,mode,note,bill_id,created_at,staff) values(?,?,?,?,?,?,?)')
       .run(c.id, amount, mode, clean(note, 200), billId || null, nowLocal(), clean(this.who || '', 60)).lastInsertRowid;
+    this._pushRow('payments', id);
     this.audit('payment.receive', c.name, `₹${amount} ${mode}${note ? ' · ' + note : ''}`);
     return { id, customer: this.customer(c.id) };
   },
@@ -177,6 +182,7 @@ const methods = {
     if (!p) throw new Error('Payment not found.');
     if (!p.cancelled) {
       this.db.prepare('update payments set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id);
+      this.linkPush('ledger', { k: 'payment_cancel', d: { uid: this._uidOf('payments', id) } });
       this.audit('payment.cancel', p.name, `₹${p.amount} ${p.mode} from ${p.created_at}`);
     }
     return this.customer(p.customer_id);
@@ -240,6 +246,7 @@ const methods = {
         if (it && it.stock != null) { inc.run(sq, l.code); this._move(l.code, sq, 'adjust', 'return ' + no); }
       }
       this.db.prepare('update bills set returned=round(returned+?,2) where id=?').run(total, bill.id);
+      this._pushRow('returns', rid);
       this.audit('bill.return', no, `bill ${bill.bill_no} · ₹${total} ${mode === 'account' ? 'to udhaar account' : 'refunded ' + mode} · ${out.map(l => `${l.qty} ${l.unit} ${l.name}`).join(', ')}${p.note ? ' · ' + p.note : ''}`);
       return rid;
     })();
@@ -282,14 +289,17 @@ const methods = {
     const dup = this.db.prepare('select id from suppliers where lower(name)=lower(?) and id<>?').get(name, id || 0);
     if (dup) throw new Error('A supplier with this name already exists.');
     const v = [name, clean(p.phone, 20), clean(p.gstin, 20).toUpperCase(), clean(p.address, 300), r2(p.opening)];
+    let oldKey = '';
     if (id) {
       const old = this.db.prepare('select * from suppliers where id=?').get(id);
       this.db.prepare('update suppliers set name=?, phone=?, gstin=?, address=?, opening=? where id=?').run(...v, id);
       if (old && r2(old.opening) !== r2(p.opening)) this.audit('supplier.edit', name, `opening ${old.opening} → ${r2(p.opening)}`);
+      if (old && supKey(old.name) !== supKey(name)) oldKey = supKey(old.name);
     } else {
       id = this.db.prepare('insert into suppliers(name,phone,gstin,address,opening,created_at) values(?,?,?,?,?,?)').run(...v, nowLocal()).lastInsertRowid;
       this.audit('supplier.add', name, +p.opening ? `opening balance ${r2(p.opening)}` : '');
     }
+    this.linkPush('ledger', { k: 'supplier', d: this._supPayload(id, oldKey) });
     return this.supplier(id);
   },
   savePurchase(p) {
@@ -331,6 +341,7 @@ const methods = {
         }
         if (ch.length) { this.linkPush('item', this._itemPayload(l.it.code, false)); this.audit('item.edit', l.it.name, ch.join('; ') + ` (purchase ${no})`); }
       }
+      this._pushRow('purchases', pid);
       this.audit('purchase.save', no, `${sup ? sup.name : 'no supplier'}${p.supplier_bill ? ' bill ' + clean(p.supplier_bill, 40) : ''} · ${out.length} items · ₹${total}${paid ? ` · paid ₹${paid}` : ''}`);
       return pid;
     })();
@@ -355,6 +366,7 @@ const methods = {
         if (it && it.stock != null) { this.db.prepare('update items set stock=round(stock-?,2) where code=?').run(l.qty, l.code); this._move(l.code, -l.qty, 'adjust', 'cancel ' + p.purchase_no); }
       }
       this.db.prepare('update purchases set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id);
+      this.linkPush('ledger', { k: 'purchase_cancel', d: { uid: this._uidOf('purchases', id) } });
       this.audit('purchase.cancel', p.purchase_no, `${p.supplier} · ₹${p.total} · stock taken back out`);
     })();
     return this.getPurchase(id);
@@ -365,14 +377,15 @@ const methods = {
     amount = r2(amount);
     if (!(amount > 0)) throw new Error('Enter the amount paid.');
     mode = MODES.includes(mode) ? mode : 'cash';
-    this.db.prepare('insert into supplier_payments(supplier_id,amount,mode,note,created_at,staff) values(?,?,?,?,?,?)').run(s.id, amount, mode, clean(note, 200), nowLocal(), clean(this.who || '', 60));
+    const xid = this.db.prepare('insert into supplier_payments(supplier_id,amount,mode,note,created_at,staff) values(?,?,?,?,?,?)').run(s.id, amount, mode, clean(note, 200), nowLocal(), clean(this.who || '', 60)).lastInsertRowid;
+    this._pushRow('supplier_payments', xid);
     this.audit('supplier.pay', s.name, `₹${amount} ${mode}${note ? ' · ' + note : ''}`);
     return this.supplier(s.id);
   },
   cancelSupplierPayment(id) {
     const x = this.db.prepare('select x.*, s.name from supplier_payments x join suppliers s on s.id=x.supplier_id where x.id=?').get(id);
     if (!x) throw new Error('Payment not found.');
-    if (!x.cancelled) { this.db.prepare('update supplier_payments set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id); this.audit('supplier.pay.cancel', x.name, `₹${x.amount} ${x.mode} from ${x.created_at}`); }
+    if (!x.cancelled) { this.db.prepare('update supplier_payments set cancelled=1, cancelled_at=? where id=?').run(nowLocal(), id); this.linkPush('ledger', { k: 'spay_cancel', d: { uid: this._uidOf('supplier_payments', id) } }); this.audit('supplier.pay.cancel', x.name, `₹${x.amount} ${x.mode} from ${x.created_at}`); }
     return this.supplier(x.supplier_id);
   },
   suppliersOwed() {
@@ -380,4 +393,5 @@ const methods = {
   },
 };
 
-module.exports = { migrateLedger, ledgerMethods: methods, custKey };
+Object.assign(methods, require('./ledger-sync').syncMethods);
+module.exports = { migrateLedger, ledgerMethods: methods, custKey, supKey };

@@ -1929,9 +1929,11 @@ async function renderSheetCard() {
   if (st.url) {
     el.innerHTML = `<p>Connected. Every bill appears in your sheet within about 15 seconds, and the item list with stock updates every minute. Open the sheet in the Google Sheets app on your phone to watch it.</p>
       <p class="${st.lastError ? 'err' : 'muted'}">${st.lastError ? 'Last try failed: ' + esc(st.lastError) + (st.pending ? ` · ${st.pending} waiting, will retry` : '') : (st.lastOk ? 'Last sent ' + esc(new Date(st.lastOk).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })) : 'Connected') + (st.pending ? ` · ${st.pending} waiting to send` : ' · all sent')}</p>
+      ${st.oldScript ? `<div class="confirmbar" style="background:color-mix(in srgb,var(--warn) 14%,transparent)"><span><b>Update the sheet script to get the Udhaar, Payments, Returns, Purchases and Suppliers tabs.</b> Click <b>Copy setup script</b>, paste it over the old one in Extensions → Apps Script, then Deploy → Manage deployments → Edit → Version: New version → Deploy. The link stays the same.</span><button type="button" class="btn" id="shCopy2">Copy setup script</button></div>` : ''}
       <div class="toolbar"><button type="button" class="btn accent" id="shNow">Send now</button><button type="button" class="btn" id="shKey">Copy key for another laptop</button><button type="button" class="btn danger" id="shOff">Disconnect</button></div>
       <p class="muted small">To connect another laptop to the same sheet: on that laptop paste the same Web app link and this key.</p>
       <div class="confirmbar" id="shConfirm" hidden><span>Stop sending to the Google Sheet? What’s already in the sheet stays there.</span><button type="button" class="btn" id="shNo">Keep</button><button type="button" class="btn danger" id="shYes">Disconnect</button></div>`;
+    $('#shCopy2')?.addEventListener('click', async () => { try { await rpc('clipboard.write', await rpc('sync.script')); toast('Setup script copied'); } catch (e) { toast(e.message, { err: true }); } });
     $('#shKey').addEventListener('click', async () => { try { await rpc('clipboard.write', await rpc('sync.key')); toast('Key copied. Paste it on the other laptop.'); } catch (e) { toast(e.message, { err: true }); } });
     $('#shNow').addEventListener('click', async () => { $('#shNow').disabled = true; try { await rpc('sync.now'); } catch (e) {} renderSheetCard(); });
     $('#shOff').addEventListener('click', () => { $('#shConfirm').hidden = false; });
@@ -2000,6 +2002,7 @@ window.api.on && window.api.on('data-changed', async ch => {
   if (S.view === 'items') renderItemRows();
   if (S.view === 'sales' && ch.bills) renderSales();
   if (ch.bills) toast(`${ch.bills} new bill${ch.bills === 1 ? '' : 's'} from the phone app`);
+  if (ch.ledger) { if (S.view === 'customers') renderCustomers(); if (S.view === 'purchases') renderPurchases(); }
   if (ch.staff) {
     const had = S.auth.user, before = JSON.stringify(had && [had.role, had.perms]);
     await loadAuth();

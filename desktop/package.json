@@ -1,7 +1,7 @@
 {
   "name": "nrrl-billing",
   "productName": "NRRL Billing",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "description": "Barcode billing, thermal receipts and inventory for Nathu Ram Ram Lal",
   "author": "Nathu Ram Ram Lal",
   "main": "main.js",
@@ -33,6 +33,7 @@
       "sheets-script.gs",
       "link.js",
       "ledger.js",
+      "ledger-sync.js",
       "!**/node_modules/better-sqlite3/deps/**",
       "!**/node_modules/better-sqlite3/src/**",
       "!**/node_modules/**/*.{md,markdown,ts,map,cc,h,gyp,gypi}",
