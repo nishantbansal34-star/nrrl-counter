@@ -87,7 +87,7 @@ jobs:
           cp -r ../android-icons/mipmap-* $R/
           sed -i 's#<color name="ic_launcher_background">.*</color>#<color name="ic_launcher_background">\#4a2fbd</color>#' $R/values/ic_launcher_background.xml || true
 
-      - name: Signing key (the private key once the owner has added the two ANDROID_KEYSTORE secrets)
+      - name: Signing key (private, from the repository secrets)
         working-directory: shell
         env:
           NRRL_KS_PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -98,8 +98,7 @@ jobs:
             KS="$RUNNER_TEMP/nrrl-release.jks"; echo "$NRRL_KS_B64" | base64 -d > "$KS"; ALIAS=nrrl; PWEXPR='System.getenv("NRRL_KS_PW")'
             echo "::notice::Signing with the private release key"
           else
-            KS="$GITHUB_WORKSPACE/android-signing/nrrl.keystore"; ALIAS=androiddebugkey; PWEXPR='"android"'
-            echo "::warning::ANDROID_KEYSTORE secrets not set: signing with the old shared key"
+            echo "::error::ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD secrets are missing. Not building with any other key."; exit 1
           fi
           python3 - "$KS" "$ALIAS" "$PWEXPR" <<'PY'
           import sys
