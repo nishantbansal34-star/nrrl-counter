@@ -270,7 +270,9 @@ function labelRates(item, s) {
   return { retail, ws };
 }
 // biggest font (pt) at which a rate still fits across the label on its own line
-const capPt = (wMm, main, unit) => ((wMm - 3.5) * 2.835 / (main * 0.62 + unit * 0.72 * 0.56)).toFixed(1);
+// main/unit may be the text itself (capital letters are wider than digits) or just its length
+const em = t => typeof t === 'number' ? t * 0.66 : [...String(t)].reduce((a, c) => a + (/[A-Z]/.test(c) ? 0.8 : /[0-9₹]/.test(c) ? 0.68 : 0.56), 0); // extra-bold widths, a little generous
+const capPt = (wMm, main, unit) => ((wMm - 3.8) * 2.835 / (em(main) + (typeof unit === 'number' ? unit * 0.72 : em(unit)) * 0.56)).toFixed(1);
 /* Rate text size: 100 = normal, up to 250 = two and a half times bigger */
 const rateScale = s => { const v = parseInt(s.label_rate_size, 10); return (v >= 70 && v <= 300 ? v : 100) / 100; };
 /* The shop logo on a label: a black-and-white picture made when it was added in Settings. */
@@ -308,13 +310,12 @@ function labelCell(item, s, bc, xMm) {
       ${labelStyle(s) !== 'both' ? (() => {
         const { main, minor, pack } = ratePair(item, s), fz = labelFz(s), rs = rateScale(s);
         if (!main) return `<div class="code">${esc(item.code)}</div>`;
-        const smallPt = fz(6, 7.5, 12) * Math.min(rs, 1.3);
-        const minorMm = minor ? ((minor.text.length * 0.62 + (minor.unit.length + 1) * 0.72 * 0.56) * smallPt / 2.835 + 1.2) : 0;
-        const cap = (Math.max(8, w - 3.5 - minorMm) * 2.835 / (main.text.length * 0.62 + (main.unit.length + 1) * 0.72 * 0.56)).toFixed(1);
+        // both rates big and readable: the second one is 80% of the first, and drops to its own line when they don't fit side by side
+        const cap = capPt(w, main.text, '/' + main.unit), mcap = minor ? capPt(w, minor.text, '/' + minor.unit) : 0;
         return `<div class="code">${esc(item.code)}${pack ? ' · ' + esc(pack) : ''}</div>
-      <div class="row one"><span class="${main.kind} big" style="--cap:${cap}pt">${esc(main.text)}<small>/${esc(main.unit)}</small></span>${minor ? `<span class="${minor.kind} sm" style="font-size:${smallPt.toFixed(1)}pt">${esc(minor.text)}<small>/${esc(minor.unit)}</small></span>` : ''}</div>`;
+      <div class="row one"><span class="${main.kind} big" style="--cap:${cap}pt">${esc(main.text)}<small>/${esc(main.unit)}</small></span>${minor ? `<span class="${minor.kind} sm" style="--cap:${mcap}pt">${esc(minor.text)}<small>/${esc(minor.unit)}</small></span>` : ''}</div>`;
       })() : `<div class="code">${esc(item.code)}</div>
-      ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr" style="--cap:${capPt(w, ('₹' + r.retail.amt).length, r.retail.unit.length + 1)}pt">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws" style="--cap:${capPt(w, r.ws.code.length, r.ws.unit.length + 1)}pt">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}`}
+      ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr" style="--cap:${capPt(w, '₹' + r.retail.amt, '/' + r.retail.unit)}pt">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws" style="--cap:${capPt(w, r.ws.code, '/' + r.ws.unit)}pt">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}`}
     </div>`;
 }
 /* list = one entry per label (item or null for a blank). Each printed page is one row of the roll. */
@@ -341,12 +342,12 @@ function labelsHTML(list, s, bcs) {
     .row .ws{margin-left:auto}
     .bc{min-height:${rs > 1.2 ? 5 : 4}mm}
     .code{font-size:${fz(5, 6, 9)}pt;font-family:Consolas,monospace;text-align:center;line-height:1.1;white-space:nowrap;overflow:hidden}
-    .pr{font-size:min(${(fz(8.5, 11, 18) * rs).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1}
-    .ws{font-size:min(${(fz(7.5, 9.5, 15) * rs).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
+    .pr{font-size:min(${(fz(8.5, 11, 18) * rs * 1.3).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1}
+    .ws{font-size:min(${(fz(8.5, 11, 18) * rs * 1.3).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
     .pr small,.ws small{font-size:.72em;font-weight:700}
-    .row.one{flex-wrap:nowrap;align-items:baseline}
+    .row.one{flex-wrap:wrap;align-items:baseline}
     .row.one .big{margin-left:0;font-size:min(${(fz(8.5, 11, 18) * rs * 1.65).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1}
-    .row.one .sm{margin-left:auto;font-weight:700;line-height:1}
+    .row.one .sm{margin-left:auto;font-size:min(${(fz(8.5, 11, 18) * rs * 1.65 * 0.8).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1}
     .row.one .big small{font-size:.6em}
   </style></head><body>${rows.map(r => `<div class="pg">${r.map((it, i) => labelCell(it, s, it && bcs[it.code], shift + i * (w + gap))).join('')}</div>`).join('')}</body></html>`;
 }
@@ -445,7 +446,7 @@ async function tsplLabels(entries, s) {
       const avail = wD - 2 * pad - 8;
       // printer's built-in fonts, smallest to largest; pick by the rate size chosen, as big as fits
       const FONTS = [{ f: '1', cw: 8, ch: 12 }, { f: '2', cw: 12, ch: 20 }, { f: '3', cw: 16, ch: 24 }, { f: '4', cw: 24, ch: 32 }, { f: '5', cw: 32, ch: 48 }];
-      const wantH = 20 * rateScale(s) * (dpi === 300 ? 1.5 : 1);
+      const wantH = 26 * rateScale(s) * (dpi === 300 ? 1.5 : 1); // rates big and readable
       const fit = n => FONTS.filter(x => x.ch <= Math.max(12, wantH) && n * x.cw <= wD - 2 * pad);
       let font = fit(left.length + right.length + 1).pop(), twoLines = false;
       const one = fit(Math.max(left.length, right.length)).pop() || FONTS[0];
@@ -453,16 +454,16 @@ async function tsplLabels(entries, s) {
       let minorFont = null;
       if (design) {
         const scale = dpi === 300 ? 1.5 : 1, room = wD - 2 * pad;
-        minorFont = design.minor ? (FONTS.filter(x => x.ch <= Math.max(12, 14 * rateScale(s) * scale) && design.minor.length * x.cw <= room * 0.5).pop() || FONTS[0]) : null;
-        const minorW = design.minor ? design.minor.length * minorFont.cw + 10 : 0;
-        const pick = mw => FONTS.filter(x => x.ch <= Math.max(20, wantH * 1.65) && design.main.length * x.cw + mw <= room).pop() || FONTS[0];
-        font = pick(minorW);
-        // the big rate must stay clearly bigger: on a narrow label, shrink the small one instead
-        if (minorFont && minorFont !== FONTS[0]) { const alt = pick(design.minor.length * FONTS[0].cw + 10); if (alt.ch > font.ch) { font = alt; minorFont = FONTS[0]; } }
-        twoLines = false;
+        // the main rate as big as fits on its own; the other rate one size smaller, still big. Side by side if they fit, else stacked.
+        font = FONTS.filter(x => x.ch <= Math.max(20, wantH * 1.65 / scale * scale) && design.main.length * x.cw <= room).pop() || FONTS[0];
+        if (design.minor) {
+          const fi = FONTS.indexOf(font);
+          minorFont = FONTS.slice(0, Math.max(1, fi)).filter(x => design.minor.length * x.cw <= room).pop() || FONTS[0];
+          twoLines = design.main.length * font.cw + 10 + design.minor.length * minorFont.cw > room;
+        } else twoLines = false;
       }
       const topY = D(1), nameH = 20;
-      const rateY = hD - D(0.8) - font.ch, codeY = (twoLines ? rateY - font.ch - 2 : rateY) - 2 - 12;
+      const rateY = hD - D(0.8) - font.ch, codeY = (twoLines ? rateY - (minorFont ? minorFont.ch : font.ch) - 2 : rateY) - 2 - 12;
       const bcY = topY + (logo ? Math.max(nameH, logo.h) : nameH) + D(0.6), bcH = Math.max(D(5), codeY - D(0.4) - bcY);
       let nameX = x0 + pad, headH = nameH;
       if (logo) {
@@ -475,8 +476,7 @@ async function tsplLabels(entries, s) {
       if (design && design.pack && (codeTxt.length + 3 + design.pack.length) * 8 <= wD - 2 * pad) codeTxt += ' - ' + design.pack;
       if (design) {
         out.push(`TEXT ${x0 + pad},${rateY},"${font.f}",0,1,1,"${design.main}"`);
-        if (design.minor && design.main.length * font.cw + 10 + design.minor.length * minorFont.cw <= wD - 2 * pad)
-          out.push(`TEXT ${x0 + wD - pad - design.minor.length * minorFont.cw},${rateY + font.ch - minorFont.ch},"${minorFont.f}",0,1,1,"${design.minor}"`);
+        if (design.minor) out.push(`TEXT ${x0 + wD - pad - design.minor.length * minorFont.cw},${twoLines ? rateY - minorFont.ch - 2 : rateY + font.ch - minorFont.ch},"${minorFont.f}",0,1,1,"${design.minor}"`);
       }
       out.push(`TEXT ${x0 + Math.round((wD - codeTxt.length * 8) / 2)},${codeY},"1",0,1,1,"${codeTxt}"`);
       if (left) out.push(`TEXT ${x0 + pad},${twoLines ? rateY - font.ch - 2 : rateY},"${font.f}",0,1,1,"${left}"`);
