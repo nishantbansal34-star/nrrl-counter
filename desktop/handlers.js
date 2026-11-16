@@ -176,7 +176,7 @@ function makeHandlers(ctx) {
       const missing = entries.find(e => !e.item);
       if (missing) throw new Error('An item on the label list no longer exists. Remove it and try again.');
       if (show && show.size && show.size !== st().getSetting('label_size')) st().useLabelSize(show.size);
-      if (show) st().saveSettings({ label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0', ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}) });
+      if (show) st().saveSettings({ label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0', ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}), ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}) });
       return ctx.printLabels(entries, settings());
     },
     'print.labelPreview': async code => {

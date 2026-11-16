@@ -63,6 +63,7 @@ const DEFAULTS = {
   label_show_logo: '1',
   label_logo_invert: '0',
   label_rate_size: '100',
+  label_style: 'both',
   bill_format: 'thermal',
   a4_printer: '',
   pdf_format: 'a4',
@@ -77,7 +78,7 @@ const DEFAULTS = {
   next_code: '10001',
 };
 const EDITABLE = new Set(['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'printer', 'paper', 'print_margin', 'font_size',
-  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'label_show_logo', 'label_logo_invert', 'label_rate_size', 'bill_format', 'a4_printer', 'pdf_format', 'wa_mode', 'invoice_terms', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
+  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'label_show_logo', 'label_logo_invert', 'label_rate_size', 'label_style', 'bill_format', 'a4_printer', 'pdf_format', 'wa_mode', 'invoice_terms', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
 
 class Store {
   constructor(file) {
@@ -162,7 +163,7 @@ class Store {
       }
       this._syncLabelSize();
     })();
-    const changed = Object.keys(obj || {}).filter(k => EDITABLE.has(k) && !['label_price', 'label_wcode', 'label_show_logo', 'label_rate_size'].includes(k) && String(before[k] ?? '') !== String(this.getSetting(k) ?? ''));
+    const changed = Object.keys(obj || {}).filter(k => EDITABLE.has(k) && !['label_price', 'label_wcode', 'label_show_logo', 'label_rate_size', 'label_style'].includes(k) && String(before[k] ?? '') !== String(this.getSetting(k) ?? ''));
     if (changed.length) this.audit('settings', '', changed.map(k => `${k}: ${String(before[k] ?? '').slice(0, 40)} → ${String(this.getSetting(k)).slice(0, 40)}`).join('; '));
     return this.getSettings();
   }

@@ -276,6 +276,24 @@ const rateScale = s => { const v = parseInt(s.label_rate_size, 10); return (v >=
 /* The shop logo on a label: a black-and-white picture made when it was added in Settings. */
 const logoOn = s => !!(s.label_logo && s.label_show_logo !== '0');
 const logoMm = s => { const { h } = labelSize(s); return Math.max(3.5, Math.min(10, h * 0.2)); };
+/* Label design: 'both' = retail and wholesale side by side (the original), 'retail' = retail rate big,
+   'wholesale' = wholesale rate big with the pack size. The other rate is still printed, small. */
+const labelStyle = s => (s.label_style === 'retail' || s.label_style === 'wholesale') ? s.label_style : 'both';
+const labelFz = s => { const { w, h } = labelSize(s); const small = h < 22 || w < 40, big = h >= 40 && w >= 60; return (sm, md, bg) => small ? sm : big ? bg : md; };
+// "12 pc = 1 doz" for items sold wholesale by the dozen, packet or box
+function packText(item) {
+  const q = +item.wholesale_qty;
+  if (!(q > 1) || !item.wholesale_unit || item.wholesale_unit === item.unit) return '';
+  return `${plain(q)} ${unitShort(item.unit)} = 1 ${unitShort(item.wholesale_unit)}`;
+}
+// which rate is the big one on this label, and which is the small one
+function ratePair(item, s) {
+  const r = labelRates(item, s), st = labelStyle(s);
+  const R = r.retail ? { kind: 'pr', text: '₹' + r.retail.amt, unit: r.retail.unit } : null;
+  const W = r.ws ? { kind: 'ws', text: r.ws.code, unit: r.ws.unit } : null;
+  if (st === 'wholesale') return { main: W || R, minor: W ? R : null, pack: W ? packText(item) : '' };
+  return { main: R || W, minor: R ? W : null, pack: '' };
+}
 function labelCell(item, s, bc, xMm) {
   const showPrice = s.label_price !== '0';
   if (!item) return `<div class="lab" style="left:${xMm.toFixed(3)}mm"></div>`;
@@ -287,8 +305,16 @@ function labelCell(item, s, bc, xMm) {
   return `<div class="lab" style="left:${xMm.toFixed(3)}mm">
       ${logoOn(s) ? `<div class="hd"><img class="logo" src="${s.label_logo}" alt=""><div class="nm">${esc(item.name)}</div></div>` : `<div class="nm">${esc(item.name)}</div>`}
       <div class="bc"><svg class="bars" style="left:${(absLeft - xMm).toFixed(4)}mm;width:${bc.widthMm.toFixed(4)}mm" viewBox="0 0 ${vw} 100" preserveAspectRatio="none" shape-rendering="crispEdges" fill="#000">${rects}</svg></div>
-      <div class="code">${esc(item.code)}</div>
-      ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr" style="--cap:${capPt(w, ('₹' + r.retail.amt).length, r.retail.unit.length + 1)}pt">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws" style="--cap:${capPt(w, r.ws.code.length, r.ws.unit.length + 1)}pt">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}
+      ${labelStyle(s) !== 'both' ? (() => {
+        const { main, minor, pack } = ratePair(item, s), fz = labelFz(s), rs = rateScale(s);
+        if (!main) return `<div class="code">${esc(item.code)}</div>`;
+        const smallPt = fz(6, 7.5, 12) * Math.min(rs, 1.3);
+        const minorMm = minor ? ((minor.text.length * 0.62 + (minor.unit.length + 1) * 0.72 * 0.56) * smallPt / 2.835 + 1.2) : 0;
+        const cap = (Math.max(8, w - 3.5 - minorMm) * 2.835 / (main.text.length * 0.62 + (main.unit.length + 1) * 0.72 * 0.56)).toFixed(1);
+        return `<div class="code">${esc(item.code)}${pack ? ' · ' + esc(pack) : ''}</div>
+      <div class="row one"><span class="${main.kind} big" style="--cap:${cap}pt">${esc(main.text)}<small>/${esc(main.unit)}</small></span>${minor ? `<span class="${minor.kind} sm" style="font-size:${smallPt.toFixed(1)}pt">${esc(minor.text)}<small>/${esc(minor.unit)}</small></span>` : ''}</div>`;
+      })() : `<div class="code">${esc(item.code)}</div>
+      ${(() => { const r = labelRates(item, s); return (r.retail || r.ws) ? `<div class="row">${r.retail ? `<span class="pr" style="--cap:${capPt(w, ('₹' + r.retail.amt).length, r.retail.unit.length + 1)}pt">₹${r.retail.amt}<small>/${esc(r.retail.unit)}</small></span>` : '<span></span>'}${r.ws ? `<span class="ws" style="--cap:${capPt(w, r.ws.code.length, r.ws.unit.length + 1)}pt">${esc(r.ws.code)}<small>/${esc(r.ws.unit)}</small></span>` : ''}</div>` : ''; })()}`}
     </div>`;
 }
 /* list = one entry per label (item or null for a blank). Each printed page is one row of the roll. */
@@ -296,8 +322,7 @@ function labelsHTML(list, s, bcs) {
   const { w, h, across, gap, shift, pageW } = labelSize(s);
   const rows = [];
   for (let i = 0; i < list.length; i += across) rows.push(list.slice(i, i + across));
-  const small = h < 22 || w < 40, big = h >= 40 && w >= 60;
-  const fz = (sm, md, bg) => small ? sm : big ? bg : md;
+  const fz = labelFz(s);
   const rs = rateScale(s); // rate text size chosen in Settings / print window
   return `<!doctype html><html><head><meta charset="utf-8"><style>
     @page{size:${pageW}mm ${h}mm;margin:0}
@@ -319,6 +344,10 @@ function labelsHTML(list, s, bcs) {
     .pr{font-size:min(${(fz(8.5, 11, 18) * rs).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1}
     .ws{font-size:min(${(fz(7.5, 9.5, 15) * rs).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1;font-family:"Segoe UI",Arial,sans-serif}
     .pr small,.ws small{font-size:.72em;font-weight:700}
+    .row.one{flex-wrap:nowrap;align-items:baseline}
+    .row.one .big{margin-left:0;font-size:min(${(fz(8.5, 11, 18) * rs * 1.65).toFixed(1)}pt,var(--cap,99pt));font-weight:800;line-height:1}
+    .row.one .sm{margin-left:auto;font-weight:700;line-height:1}
+    .row.one .big small{font-size:.6em}
   </style></head><body>${rows.map(r => `<div class="pg">${r.map((it, i) => labelCell(it, s, it && bcs[it.code], shift + i * (w + gap))).join('')}</div>`).join('')}</body></html>`;
 }
 async function buildLabels(entries, s) {
@@ -403,8 +432,15 @@ async function tsplLabels(entries, s) {
       const nameMax = Math.max(4, Math.floor((wD - 2 * pad) / 12));
       const name = tsplText(it.name).slice(0, nameMax);
       const r = labelRates(it, s);
-      const left = r.retail ? `Rs.${r.retail.amt}/${r.retail.unit}`.replace(/,/g, '') : '';
-      const right = r.ws ? `${r.ws.code}/${r.ws.unit}` : '';
+      let left = r.retail ? `Rs.${r.retail.amt}/${r.retail.unit}`.replace(/,/g, '') : '';
+      let right = r.ws ? `${r.ws.code}/${r.ws.unit}` : '';
+      // retail or wholesale design: one rate big on the left, the other small on the right
+      let design = null;
+      if (labelStyle(s) !== 'both') {
+        const pr = ratePair(it, s), T = x => x ? tsplText(`${x.text}/${x.unit}`).replace(/,/g, '') : '';
+        if (pr.main) design = { main: T(pr.main), minor: T(pr.minor), pack: tsplText(pr.pack) };
+        left = right = '';
+      }
       // pick the biggest built-in font that fits both rates on one line
       const avail = wD - 2 * pad - 8;
       // printer's built-in fonts, smallest to largest; pick by the rate size chosen, as big as fits
@@ -414,6 +450,17 @@ async function tsplLabels(entries, s) {
       let font = fit(left.length + right.length + 1).pop(), twoLines = false;
       const one = fit(Math.max(left.length, right.length)).pop() || FONTS[0];
       if (!font || one.ch > font.ch) { font = one; twoLines = !!(left && right); }
+      let minorFont = null;
+      if (design) {
+        const scale = dpi === 300 ? 1.5 : 1, room = wD - 2 * pad;
+        minorFont = design.minor ? (FONTS.filter(x => x.ch <= Math.max(12, 14 * rateScale(s) * scale) && design.minor.length * x.cw <= room * 0.5).pop() || FONTS[0]) : null;
+        const minorW = design.minor ? design.minor.length * minorFont.cw + 10 : 0;
+        const pick = mw => FONTS.filter(x => x.ch <= Math.max(20, wantH * 1.65) && design.main.length * x.cw + mw <= room).pop() || FONTS[0];
+        font = pick(minorW);
+        // the big rate must stay clearly bigger: on a narrow label, shrink the small one instead
+        if (minorFont && minorFont !== FONTS[0]) { const alt = pick(design.minor.length * FONTS[0].cw + 10); if (alt.ch > font.ch) { font = alt; minorFont = FONTS[0]; } }
+        twoLines = false;
+      }
       const topY = D(1), nameH = 20;
       const rateY = hD - D(0.8) - font.ch, codeY = (twoLines ? rateY - font.ch - 2 : rateY) - 2 - 12;
       const bcY = topY + (logo ? Math.max(nameH, logo.h) : nameH) + D(0.6), bcH = Math.max(D(5), codeY - D(0.4) - bcY);
@@ -424,7 +471,13 @@ async function tsplLabels(entries, s) {
       }
       out.push(`TEXT ${nameX},${topY + Math.max(0, Math.round((headH - nameH) / 2))},"2",0,1,1,"${name.slice(0, Math.max(3, Math.floor((x0 + wD - pad - nameX) / 12)))}"`);
       out.push(`BARCODE ${x0 + Math.max(0, Math.round((wD - bw) / 2))},${bcY},"${TYPE[kind]}",${bcH},0,0,${bc.dots},${bc.dots},"${tsplText(it.code)}"`);
-      const codeTxt = tsplText(it.code).slice(0, Math.floor((wD - 2 * pad) / 8));
+      let codeTxt = tsplText(it.code).slice(0, Math.floor((wD - 2 * pad) / 8));
+      if (design && design.pack && (codeTxt.length + 3 + design.pack.length) * 8 <= wD - 2 * pad) codeTxt += ' - ' + design.pack;
+      if (design) {
+        out.push(`TEXT ${x0 + pad},${rateY},"${font.f}",0,1,1,"${design.main}"`);
+        if (design.minor && design.main.length * font.cw + 10 + design.minor.length * minorFont.cw <= wD - 2 * pad)
+          out.push(`TEXT ${x0 + wD - pad - design.minor.length * minorFont.cw},${rateY + font.ch - minorFont.ch},"${minorFont.f}",0,1,1,"${design.minor}"`);
+      }
       out.push(`TEXT ${x0 + Math.round((wD - codeTxt.length * 8) / 2)},${codeY},"1",0,1,1,"${codeTxt}"`);
       if (left) out.push(`TEXT ${x0 + pad},${twoLines ? rateY - font.ch - 2 : rateY},"${font.f}",0,1,1,"${left}"`);
       if (right) out.push(`TEXT ${x0 + wD - pad - right.length * font.cw},${rateY},"${font.f}",0,1,1,"${right}"`);
