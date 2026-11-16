@@ -3,7 +3,7 @@ name: Build Windows app
 on:
   push:
     branches: [main, 'check/**']
-    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', 'label-layouts.js', '.github/workflows/desktop.yml']
   workflow_dispatch:
 
 permissions:
@@ -25,6 +25,9 @@ jobs:
 
       - name: Install
         run: npm install --no-audit --no-fund
+
+      - name: Shared label layouts (also used by the phone app)
+        run: cp ../label-layouts.js label-layouts.js
 
       - name: Build installer
         env:

@@ -351,7 +351,9 @@ function labelsHTML(list, s, bcs) {
     .row.one .big small{font-size:.6em}
   </style></head><body>${rows.map(r => `<div class="pg">${r.map((it, i) => labelCell(it, s, it && bcs[it.code], shift + i * (w + gap))).join('')}</div>`).join('')}</body></html>`;
 }
-async function buildLabels(entries, s) {
+// labels now come from the shared layouts (label-layouts.js, drawn by label-render.js)
+async function buildLabels(entries, s) { return require('./label-render').svgLabels(entries, s); }
+async function buildLabelsClassic(entries, s) {
   const list = [], bcs = {};
   for (const { item, count } of entries) {
     const n = Math.max(0, Math.min(1000, parseInt(count, 10) || 0));
@@ -403,7 +405,8 @@ module.exports = { a4HTML, inWords, billPDF, printA4, returnBill, receiptHTML, l
    Sending commands lets the printer draw each barcode itself at full sharpness, with no
    Windows driver resizing a picture of it. */
 function tsplText(t) { return String(t ?? '').replace(/₹/g, 'Rs.').replace(/[^\x20-\x7e]/g, '').replace(/"/g, "'"); }
-async function tsplLabels(entries, s) {
+async function tsplLabels(entries, s) { return require('./label-render').tsplLabels(entries, s); }
+async function tsplLabelsClassic(entries, s) {
   const dpi = String(s.label_dpi) === '300' ? 300 : 203, dpm = dpi / 25.4;
   const { w, h, across, gap, shift, pageW } = labelSize(s);
   const vgap = s.label_vgap === '' || s.label_vgap == null || !isFinite(+s.label_vgap) ? 2 : Math.max(0, +s.label_vgap);

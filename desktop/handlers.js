@@ -176,11 +176,14 @@ function makeHandlers(ctx) {
       const missing = entries.find(e => !e.item);
       if (missing) throw new Error('An item on the label list no longer exists. Remove it and try again.');
       if (show && show.size && show.size !== st().getSetting('label_size')) st().useLabelSize(show.size);
-      if (show) st().saveSettings({ label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0', ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}), ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}) });
+      if (show) st().saveSettings({ label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0', ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}), ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-H]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) });
       return ctx.printLabels(entries, settings());
     },
-    'print.labelPreview': async code => {
-      const s = settings();
+    'print.labelPreview': async (code, show) => {
+      // choices made in the print window, shown before they are saved
+      const s = { ...settings(), ...(show ? { label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0',
+        ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}),
+        ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-H]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) } : {}) };
       const it = (code && st().getItem(code)) || { code: 'NR10001', name: 'Sample item name', retail: 99 };
       const { across } = P.labelSize(s);
       return (await P.buildLabels([{ item: it, count: across }], s)).html;

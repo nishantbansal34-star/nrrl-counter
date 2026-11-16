@@ -250,3 +250,5 @@ table.grid tr.warnrow td:nth-child(3) { color: var(--bad); font-weight: 600; }
 .updbox b { color: var(--accent); }
 .updbox .row2 { display: flex; gap: 6px; }
 .updbox .btn { padding: 5px 10px; font-size: 12px; flex: 1; }
+
+.lprev{background:var(--sunk, rgba(0,0,0,.04));border-radius:10px;padding:14px;min-height:40px}

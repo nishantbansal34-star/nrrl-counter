@@ -623,7 +623,7 @@ function showApp(view) {
   $('nav.tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) show(b.dataset.tab); });
   buildBill();
   show(tabs.some(t => t[0] === view) ? view : 'bill');
-  loadItems(true);
+  loadItems(true); loadLabelSettings();
   syncPending();
   liveRefresh();
 }
@@ -1141,47 +1141,62 @@ function barcodeSvg(text, h = 56) {
 }
 const LABEL_SIZES = { '50x25': [50, 25], '38x25': [38, 25], '100x50': [100, 50] };
 const DOT = 8; // printer dots per mm (203 dpi)
-// one label as a black-and-white picture, exactly the label's size in printer dots
-function labelCanvas(it, size) {
+// label settings: the wholesale code (prefix × multiplier) and default layout come from the laptop;
+// each phone can pick its own layout and which rate is bigger
+let lblShared = LS.get('lblShared', {});
+async function loadLabelSettings() {
+  try { const r = await api('counter_label_settings', { p_token: S.token }); if (r && typeof r === 'object') { lblShared = r; LS.set('lblShared', r); } } catch (e) {}
+}
+function labelPrefs() {
+  const sh = lblShared || {};
+  const rs = parseInt(sh.label_rate_size, 10);
+  return {
+    layout: LS.get('lblLayout', /^[A-H]$/.test(sh.label_layout || '') ? sh.label_layout : 'A'),
+    emph: LS.get('lblEmph', ['both', 'retail', 'wholesale'].includes(sh.label_style) ? sh.label_style : 'both'),
+    prefix: sh.wcode_prefix == null ? 'NRRL' : sh.wcode_prefix, mult: sh.wcode_mult || 2,
+    showRetail: sh.label_price !== '0', showWholesale: sh.label_wcode !== '0',
+    rateScale: rs >= 70 && rs <= 300 ? rs / 100 : 1, shop: sh.label_shop || 'NRRL',
+  };
+}
+// one label as a black-and-white picture, exactly the label's size in printer dots, using the shared layouts
+function labelCanvas(it, size, prefs) {
   const [wmm, hmm] = LABEL_SIZES[size] || LABEL_SIZES['50x25'];
-  const W = wmm * DOT, H = hmm * DOT, k = hmm / 25; // text scales with the label height
+  const W = wmm * DOT, H = hmm * DOT;
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const g = cv.getContext('2d');
-  g.fillStyle = '#fff'; g.fillRect(0, 0, W, H); g.fillStyle = '#000'; g.textBaseline = 'top';
-  const pad = Math.round(1.5 * DOT);
-  const fit = (t, px, weight, maxW) => { let f = px; do { g.font = `${weight} ${f}px Inter, Roboto, Arial, sans-serif`; if (g.measureText(t).width <= maxW) break; f--; } while (f > 10); return f; };
-  // name: up to two lines
-  const namePx = Math.round(2.6 * DOT * k);
-  g.font = `700 ${namePx}px Inter, Roboto, Arial, sans-serif`;
-  const words = String(it.name || '').split(/\s+/); const lines = []; let cur = '';
-  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (g.measureText(t).width <= W - 2 * pad || !cur) cur = t; else { lines.push(cur); cur = w; } }
-  if (cur) lines.push(cur);
-  let y = Math.round(1.2 * DOT);
-  const twoLines = lines.length > 1 && hmm >= 30;
-  const shown = twoLines ? lines.slice(0, 2) : [lines.join(' ')];
-  for (const ln of shown) { fit(ln, namePx, 700, W - 2 * pad); g.fillText(ln, pad, y); y += namePx + 2; }
-  // rate
-  const ratePx = Math.round(3.8 * DOT * k);
-  const rate = '₹' + (Math.round(it.retail * 100) / 100) + '/' + ({ pcs: 'pc', dozen: 'doz' }[it.unit] || it.unit || 'pc');
-  fit(rate, ratePx, 800, W - 2 * pad); g.fillText(rate, pad, y); y += ratePx + Math.round(0.8 * DOT * k);
-  // barcode: widest whole-dot module that fits, at least 2 dots
-  const c = code128(it.code);
-  const codePx = Math.round(2.2 * DOT * k);
-  if (c) {
-    const total = c.modules + 20;
-    const m = Math.max(1, Math.min(4, Math.floor((W - 2 * Math.round(0.6 * DOT)) / total)));
-    const bw = c.modules * m, x0 = Math.round((W - bw) / 2);
-    const bh = Math.max(4 * DOT, H - y - codePx - Math.round(1.2 * DOT));
-    for (const [x, w] of c.bars) g.fillRect(x0 + x * m, y, w * m, bh);
-    y += bh + 2;
+  g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
+  const SANS = 'Inter, Roboto, Arial, sans-serif', MONO = '"Roboto Mono", "Droid Sans Mono", Consolas, monospace';
+  const font = (px, st) => `${st && st.mono ? 700 : 800} ${px}px ${st && st.mono ? MONO : SANS}`;
+  const width = (t, k, st) => { g.font = font(100, st); return g.measureText(t).width / 100 * k; };
+  const be = {
+    fit: NrrlLabels.smoothFit(width),
+    barcode(code, maxW, maxH) {
+      const c = code128(code); if (!c || maxH < 4 * DOT) return null;
+      for (let d = 3; d >= 2; d--) if ((c.modules + 8) * d <= maxW) return { w: c.modules * d, d, bars: c.bars, modules: c.modules };
+      return null;
+    },
+  };
+  const P = prefs || labelPrefs();
+  const els = NrrlLabels.layout(it, { wD: W, hD: H, dpm: DOT, ...P }, be);
+  const rrect = (x, y, w, h, r) => { g.beginPath(); g.moveTo(x + r, y); g.lineTo(x + w - r, y); g.quadraticCurveTo(x + w, y, x + w, y + r); g.lineTo(x + w, y + h - r); g.quadraticCurveTo(x + w, y + h, x + w - r, y + h); g.lineTo(x + r, y + h); g.quadraticCurveTo(x, y + h, x, y + h - r); g.lineTo(x, y + r); g.quadraticCurveTo(x, y, x + r, y); g.closePath(); };
+  let barcodeOk = false;
+  for (const e of els) {
+    g.fillStyle = '#000'; g.strokeStyle = '#000';
+    if (e.kind === 'rect') {
+      if (e.fill) { rrect(e.x, e.y, e.w, e.h, e.r || 0); g.fill(); }
+      else { g.lineWidth = e.stroke; rrect(e.x + e.stroke / 2, e.y + e.stroke / 2, e.w - e.stroke, e.h - e.stroke, e.r || 0); g.stroke(); }
+    } else if (e.kind === 'line') g.fillRect(e.x, e.y, e.w, e.h);
+    else if (e.kind === 'barcode') { barcodeOk = true; for (const [x, w] of e.item.bars) g.fillRect(e.x + x * e.item.d, e.y, w * e.item.d, e.h); }
+    else if (e.kind === 'text') {
+      g.fillStyle = e.color === 'white' ? '#fff' : '#000'; g.textBaseline = 'alphabetic';
+      for (const p of e.fit.parts) { g.font = font(p.size, e.fit.style); g.fillText(p.t, e.x + p.x, e.y + e.fit.base); }
+    }
   }
-  g.font = `600 ${codePx}px Inter, Roboto, Arial, sans-serif`; g.textAlign = 'center';
-  g.fillText(it.code, W / 2, y); g.textAlign = 'left';
   // pure black and white: thermal printers turn grey into speckles
   const im = g.getImageData(0, 0, W, H), d = im.data;
   for (let i = 0; i < d.length; i += 4) { const v = d[i] * .3 + d[i + 1] * .59 + d[i + 2] * .11 < 150 ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
   g.putImageData(im, 0, 0);
-  return { cv, wmm, hmm, fits: !!c && c.modules + 20 <= W / 2 };
+  return { cv, wmm, hmm, fits: barcodeOk };
 }
 async function shareLabels(it, size, copies) {
   const { cv, wmm, hmm } = labelCanvas(it, size);
@@ -1212,6 +1227,11 @@ function openLabelSheet(it, opts = {}) {
     <div class="lblprev" id="lPrev"></div>
     <div class="field" style="margin-top:12px"><span class="lbl">Label size</span>
       <div class="seg" role="group" aria-label="Label size" id="lSize">${Object.keys(LABEL_SIZES).map(k => `<button type="button" data-size="${k}" aria-pressed="${k === size}">${k.replace('x', ' × ')} mm</button>`).join('')}</div></div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="field"><label class="lbl" for="lLayout">Layout</label><select id="lLayout">${NrrlLabels.LAYOUTS.map(([k, l]) => `<option value="${k}"${labelPrefs().layout === k ? ' selected' : ''}>${k} · ${esc(l)}</option>`).join('')}</select></div>
+      <div class="field"><label class="lbl" for="lEmph">Bigger rate</label><select id="lEmph">${NrrlLabels.EMPHASIS.map(([k, l]) => `<option value="${k}"${labelPrefs().emph === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+    </div>
+    <p class="hint" id="lFit" hidden style="margin-top:6px"></p>
     <div class="field" style="margin-top:12px"><span class="lbl">How many labels</span>
       <div class="ctr" style="margin:0"><button class="qb" type="button" id="lLess" aria-label="One less">−</button><input type="number" inputmode="numeric" id="lCopies" value="1" min="1" max="500" aria-label="Copies"><button class="qb" type="button" id="lMore" aria-label="One more">+</button></div></div>
     <p class="hint" style="margin-top:10px">${canPdf() ? 'Share opens the label as a PDF: print it from your label printer’s app, or send it on WhatsApp.' : 'Saves the label as a picture.'} The laptop can print it too: Labels → search ${esc(it.code)}.</p>
@@ -1220,8 +1240,14 @@ function openLabelSheet(it, opts = {}) {
       <button class="btn primary" type="button" id="lShare">${canPdf() ? 'Share label' : 'Save label'}</button>
       ${opts.fresh ? '<button class="btn w" type="button" id="lClose">Done</button>' : ''}
     </div>`, opts.onClose);
-  const draw = () => { const { cv } = labelCanvas(it, size); cv.className = 'lblcv'; const p = $('#lPrev', d); p.innerHTML = ''; p.appendChild(cv); };
+  const draw = () => {
+    const { cv, fits } = labelCanvas(it, size); cv.className = 'lblcv'; const p = $('#lPrev', d); p.innerHTML = ''; p.appendChild(cv);
+    const f = $('#lFit', d); f.hidden = fits; f.textContent = fits ? '' : `Code ${it.code} is too long for this label size. Use a wider label, or give the item a short code (New code).`;
+  };
   draw();
+  if (!Object.keys(lblShared || {}).length) loadLabelSettings().then(() => { if ($('#labelSheet')) draw(); });
+  $('#lLayout', d).addEventListener('change', e => { LS.set('lblLayout', e.target.value); draw(); });
+  $('#lEmph', d).addEventListener('change', e => { LS.set('lblEmph', e.target.value); draw(); });
   $('#lSize', d).addEventListener('click', e => { const b = e.target.closest('[data-size]'); if (!b) return; size = b.dataset.size; LS.set('lblSize', size); $$('#lSize button', d).forEach(x => x.setAttribute('aria-pressed', x === b)); draw(); });
   const setC = n => { copies = Math.max(1, Math.min(500, Math.round(+n) || 1)); $('#lCopies', d).value = copies; };
   $('#lLess', d).addEventListener('click', () => setC(copies - 1));

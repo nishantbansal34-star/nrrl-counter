@@ -46,6 +46,7 @@ function createLink(getStore, onChange) {
     if (r.kind === 'cancel') return rpc('counter_dev_bill_cancel', { p_key: key, p_bill_no: p.bill_no });
     if (r.kind === 'stock') return rpc('counter_dev_stock_add', { p_key: key, p_code: p.code, p_delta: p.delta });
     if (r.kind === 'ledger') return rpc('counter_dev_ledger_put', { p_key: key, p_kind: p.k, p_data: p.d });
+    if (r.kind === 'settings') return rpc('counter_dev_settings_put', { p_key: key, p_settings: p });
   }
   async function pushQueue(st, key) {
     for (let round = 0; round < 40; round++) {
@@ -72,6 +73,7 @@ function createLink(getStore, onChange) {
         try { await sendOne(key, r); st.linkDone([r.id]); }
         catch (e) {
           // an older server can't keep udhaar/returns/purchases yet: drop them for now, they are sent again once it can
+          if (r.kind === 'settings' && !e.net && /counter_dev_settings_put|PGRST202|Could not find|404/i.test(String(e.message) + String(e.code))) { st.linkDone([r.id]); i++; continue; }
           if (r.kind === 'ledger' && !e.net && /counter_dev_ledger_put|PGRST202|Could not find|404/i.test(String(e.message) + String(e.code))) {
             st.linkDone([r.id]); st.setSetting('ledger_sent', '0'); state.ledgerOk = false; i++; continue;
           }
@@ -146,6 +148,7 @@ function createLink(getStore, onChange) {
     try {
       if (!st.getSetting('link_code')) { try { useCode(st, (await rpc('counter_dev_info', { p_key: key })).code); } catch (e) { if (e.code === 'DEVICE_UNLINKED') throw e; } }
       if (state.ledgerOk !== false) st.ledgerBackfill();
+      if (st.getSetting('label_settings_sent') !== '1') { st.linkPush('settings', st.sharedLabelSettings()); st.setSetting('label_settings_sent', '1'); }
       await pushQueue(st, key);
       await pull(st, key);
       if (Date.now() - lastStaff > 30000) await syncStaff(st, key);
