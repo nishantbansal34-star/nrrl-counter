@@ -912,8 +912,8 @@ async function sizeChips() {
 }
 const RATE_SIZES = [['100', 'Normal'], ['130', 'Large'], ['160', 'Extra large'], ['200', 'Huge'], ['250', 'Biggest']];
 const rateSel = (id, v) => `<select id="${id}" style="width:auto">${RATE_SIZES.map(([k, l]) => `<option value="${k}"${String(v || '100') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
-// label layouts A–H (the same ones as the phone app) and which rate is bigger
-const LABEL_LAYOUTS = [['A', 'A · Two lines, full width'], ['B', 'B · Two columns'], ['C', 'C · Black price strip'], ['D', 'D · Price on top'], ['E', 'E · Boxed rates'], ['F', 'F · Barcode left, rates right (wide labels)'], ['G', 'G · Code looks like a batch number'], ['H', 'H · Shop name band']];
+// label layouts A–I (the same ones as the phone app) and which rate is bigger
+const LABEL_LAYOUTS = [['A', 'A · Two lines, full width'], ['B', 'B · Two columns'], ['C', 'C · Black price strip'], ['D', 'D · Price on top'], ['E', 'E · Boxed rates'], ['F', 'F · Barcode left, rates right (wide labels)'], ['G', 'G · Code looks like a batch number'], ['H', 'H · Shop name band'], ['I', 'I · Big barcode, rates below']];
 const LABEL_STYLES = [['both', 'Both rates equal'], ['retail', 'Retail rate bigger'], ['wholesale', 'Wholesale rate bigger']];
 const styleSel = (id, v) => `<select id="${id}" style="width:auto">${LABEL_STYLES.map(([k, l]) => `<option value="${k}"${String(v || 'both') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
 const layoutSel = (id, v) => `<select id="${id}" style="width:auto">${LABEL_LAYOUTS.map(([k, l]) => `<option value="${k}"${String(v || 'A') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
@@ -922,7 +922,7 @@ const layoutSel = (id, v) => `<select id="${id}" style="width:auto">${LABEL_LAYO
 // a "change" event so the live preview updates.
 const nearestRate = v => RATE_SIZES.reduce((a, b) => Math.abs(+b[0] - (+v || 100)) < Math.abs(+a[0] - (+v || 100)) ? b : a)[0];
 function labelChoices(it) {
-  const s = S.settings, rs = nearestRate(s.label_rate_size), style = s.label_style || 'both', lay = /^[A-H]$/.test(s.label_layout || '') ? s.label_layout : 'A';
+  const s = S.settings, rs = nearestRate(s.label_rate_size), style = s.label_style || 'both', lay = /^[A-I]$/.test(s.label_layout || '') ? s.label_layout : 'A';
   const pre = s.wcode_prefix ?? 'NRRL', mult = isFinite(+s.wcode_mult) && +s.wcode_mult > 0 ? +s.wcode_mult : 2;
   const rTxt = it && +it.retail > 0 ? `₹${+it.retail}` : '', wTxt = it && +it.wholesale > 0 ? `${pre}${Math.round(+it.wholesale * mult * 100) / 100}` : '';
   return `<div class="lchoices w">

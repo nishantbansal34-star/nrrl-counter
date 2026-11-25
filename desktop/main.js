@@ -234,7 +234,7 @@ function selfTest() {
         if (p.total !== 60) out.push('purchase total ' + p.total);
         // labels: every design draws, and Biggest really makes the rates bigger
         const des = await call('print.labelDesigns', 'ST1', { retail: true, wholesale: true, rateSize: '200' });
-        if (Object.keys(des).length !== 8 || Object.values(des).some(x => !x.includes('<svg') || !x.includes('</svg>'))) out.push('label designs ' + Object.keys(des).length);
+        if (Object.keys(des).length !== 9 || Object.values(des).some(x => !x.includes('<svg') || !x.includes('</svg>'))) out.push('label designs ' + Object.keys(des).length);
         const fz = h => Math.max(...h.split('font-size="').slice(1).map(x => parseFloat(x)));
         const n1 = fz(await call('print.labelPreview', 'ST1', { retail: true, wholesale: true, rateSize: '100', layout: 'A' }));
         const n5 = fz(await call('print.labelPreview', 'ST1', { retail: true, wholesale: true, rateSize: '250', layout: 'A' }));

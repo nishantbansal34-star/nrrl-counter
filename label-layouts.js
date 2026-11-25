@@ -18,6 +18,7 @@
   const LAYOUTS = [
     ['A', 'Two lines, full width'], ['B', 'Two columns'], ['C', 'Black price strip'], ['D', 'Price on top'],
     ['E', 'Boxed rates'], ['F', 'Barcode left, rates right'], ['G', 'Code looks like a batch number'], ['H', 'Shop name band'],
+    ['I', 'Big barcode, rates below'],
   ];
   const EMPHASIS = [['both', 'Both equal'], ['retail', 'Retail bigger'], ['wholesale', 'Wholesale bigger']];
   // rate sizes: the value saved in settings (percent), its name, the share of the label height the rates may
@@ -75,7 +76,7 @@
 
   /* --- the layouts ---
      L = { wD, hD, dpm, layout, emph, rateScale, showRetail, showWholesale, prefix, mult, shop, logo }
-     be = backend: fit(runs, maxW, maxH, style), barcode(code, maxW, maxH) → {w,h,…} | null, logo(maxW, maxH) → {w,h} | null */
+     be = backend: fit(runs, maxW, maxH, style), barcode(code, maxW, maxH, {wide}) → {w,h,…} | null, logo(maxW, maxH) → {w,h} | null */
   const rateHeight = els => { const t = els.filter(e => e.rate); return t.length ? Math.min(...t.map(e => e.fit.h)) : 0; };
   function layout(item, L, be) {
     const els = layoutOne(item, L, be);
@@ -129,8 +130,8 @@
       const f = be.fit([[String(item.code), 1]], x1 - x0, h, { mono: true });
       text(f, align === 'left' ? x0 : align === 'right' ? x1 - f.w : x0 + (x1 - x0 - f.w) / 2, y);
     }
-    function barcodeAt(x0, y0, x1, y1, align) {
-      const b = be.barcode(item.code, x1 - x0, y1 - y0);
+    function barcodeAt(x0, y0, x1, y1, align, wide) {
+      const b = be.barcode(item.code, x1 - x0, y1 - y0, wide ? { wide: true } : undefined);
       if (!b) return null;
       out.push({ kind: 'barcode', x: Math.round(align === 'left' ? x0 : x0 + (x1 - x0 - b.w) / 2), y: Math.round(y0), w: b.w, h: Math.round(y1 - y0), item: b });
       return b;
@@ -251,6 +252,31 @@
       if (main) text(main, pad, yB + blockH - main.h, rt());
       let y = yB + blockH - lf.reduce((a, f) => a + f.h, 0) - (lf.length > 1 ? lgap : 0);
       lf.forEach((f, i) => { text(f, W - pad - f.w, y, i ? rt() : null); y = Math.ceil(y + f.h + lgap); });
+      return out;
+    }
+
+    /* I: a big barcode across the top (easy to scan), then the rates one under the other in normal-width
+       letters: retail on the left, the wholesale code under it on the right. No name, no small code. */
+    if (kind === 'I') {
+      const st = { bold: true, squeeze: Math.max(SQ, 0.72) }; // letters stay close to normal width
+      const kR = emph === 'wholesale' ? 0.82 : 1, kW = emph === 'retail' ? 0.82 : 1;
+      const rows = [R.r && { r: R.r, k: kR, right: false }, R.w && { r: R.w, k: kW, right: !!R.r }].filter(Boolean);
+      const barMin = Math.max(minBar, inH * 0.36), lg = mm(0.4);
+      const T = Math.max(mm(2.5), Math.min(inH * [0.4, 0.46, 0.52, 0.57, 0.62][lvl], inH - barMin - mm(0.6)));
+      let fits = [];
+      if (rows.length) {
+        const unit = (T - (rows.length - 1) * lg) / rows.reduce((a, x) => a + x.k, 0);
+        fits = rows.map(x => be.fit(runsOf(x.r), avW, unit * x.k, st));
+        if (rows.length > 1 && kR === kW && Math.abs(fits[0].h - fits[1].h) > 0.5) { const hh = Math.min(fits[0].h, fits[1].h); fits = rows.map(x => be.fit(runsOf(x.r), avW, hh, st)); }
+      }
+      const blockH = fits.reduce((a, f) => a + f.h, 0) + Math.max(0, fits.length - 1) * lg;
+      let y = H - vpad - blockH;
+      // thicker bars when they fit (easiest to scan): the barcode may come to 1.4 mm from the sides
+      barcodeAt(mm(1.4), vpad, W - mm(1.4), y - mm(0.6), null, true);
+      fits.forEach((f, i) => {
+        const x = rows.length === 1 ? pad + (avW - f.w) / 2 : rows[i].right ? W - pad - f.w : pad;
+        text(f, x, y, rt()); y += f.h + lg;
+      });
       return out;
     }
 

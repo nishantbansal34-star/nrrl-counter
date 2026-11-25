@@ -23,7 +23,7 @@ function createPrintJobs({ getStore, printLabels, notify, syncNow }) {
     const s0 = st.getSettings();
     const z = st.labelSizes().find(x => x.id === (job.opts && job.opts.size_id)) || st.labelSizes().find(x => x.id === s0.label_size) || st.labelSizes()[0];
     const s = { ...s0, label_w: z.w, label_h: z.h, label_across: z.across, label_gap: z.gap ?? '', label_vgap: z.vgap ?? '', label_shift: z.shift ?? '' };
-    if (/^[A-H]$/.test(job.opts && job.opts.layout || '')) s.label_layout = job.opts.layout;
+    if (/^[A-I]$/.test(job.opts && job.opts.layout || '')) s.label_layout = job.opts.layout;
     if (['both', 'retail', 'wholesale'].includes(job.opts && job.opts.emph)) s.label_style = job.opts.emph;
     // what the phone chose to show, and how big
     if (job.opts && typeof job.opts.retail === 'boolean') s.label_price = job.opts.retail ? '1' : '0';

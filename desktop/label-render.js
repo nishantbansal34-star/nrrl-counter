@@ -42,12 +42,14 @@ function bars(code) {
   return r;
 }
 // the widest whole-dot bar width that fits, never thinner than scanners read (about 0.25 mm)
-function barcodeFit(code, maxW, maxH, sz, s) {
+function barcodeFit(code, maxW, maxH, sz, s, o) {
   const b = bars(code);
-  const minD = sz.dpi === 300 ? 3 : 2, maxD = Math.max(minD, Math.floor(0.42 * sz.dpm));
+  // bars up to 0.42 mm wide, or 0.55 mm for designs that want thick, easy-to-scan bars
+  const minD = sz.dpi === 300 ? 3 : 2, maxD = Math.max(minD, Math.floor((o && o.wide ? 0.55 : 0.42) * sz.dpm));
   const forced = parseInt(s.label_bar, 10);
   let d = 0;
-  for (let k = maxD; k >= minD; k--) if ((b.modules + 8) * k <= maxW) { d = k; break; }
+  const quiet = o && o.wide ? 4 : 8; // white space at the ends, in bar widths (the area given already keeps off the edge)
+  for (let k = maxD; k >= minD; k--) if ((b.modules + quiet) * k <= maxW) { d = k; break; }
   if (forced >= 1 && (b.modules + 8) * forced <= maxW) d = forced;
   if (!d || maxH < 4 * sz.dpm) return null;
   return { w: b.modules * d, d, ...b };
@@ -63,7 +65,7 @@ function logoFit(s, maxW, maxH) {
 function opts(s, sz) {
   return {
     wD: Math.round(sz.w * sz.dpm), hD: Math.round(sz.h * sz.dpm), dpm: sz.dpm,
-    layout: /^[A-H]$/.test(s.label_layout || '') ? s.label_layout : 'A', emph: s.label_style || 'both',
+    layout: /^[A-I]$/.test(s.label_layout || '') ? s.label_layout : 'A', emph: s.label_style || 'both',
     rateScale: LL.rateSize(parseInt(s.label_rate_size, 10) || 100).v / 100,
     showRetail: s.label_price !== '0', showWholesale: s.label_wcode !== '0',
     prefix: s.wcode_prefix ?? 'NRRL', mult: s.wcode_mult, shop: s.label_shop || 'NRRL',
@@ -88,7 +90,7 @@ const svgWidth = (t, k, style) => [...String(t)].reduce((a, c) => a + (style && 
 function svgBackend(s, sz) {
   return {
     fit: LL.smoothFit(svgWidth),
-    barcode: (code, maxW, maxH) => barcodeFit(code, maxW, maxH, sz, s),
+    barcode: (code, maxW, maxH, o) => barcodeFit(code, maxW, maxH, sz, s, o),
     logo: (maxW, maxH) => logoFit(s, maxW, maxH),
   };
 }
@@ -184,7 +186,7 @@ function tsplLabels(entries, s) {
   const vgap = s.label_vgap === '' || s.label_vgap == null || !isFinite(+s.label_vgap) ? 2 : Math.max(0, +s.label_vgap);
   const be = {
     fit: (runs, maxW, maxH, style) => tsplFit(runs, maxW, maxH, style),
-    barcode: (code, maxW, maxH) => barcodeFit(code, maxW, maxH, sz, s),
+    barcode: (code, maxW, maxH, o) => barcodeFit(code, maxW, maxH, sz, s, o),
     logo: (maxW, maxH) => { const l = tsplLogo(s, Math.round(maxH), Math.round(maxW)); return l ? { w: l.w, h: l.h, bmp: l } : null; },
   };
   const out = [

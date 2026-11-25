@@ -1153,7 +1153,7 @@ function labelPrefs() {
   const sh = lblShared || {};
   const rs = parseInt(sh.label_rate_size, 10);
   return {
-    layout: LS.get('lblLayout', /^[A-H]$/.test(sh.label_layout || '') ? sh.label_layout : 'A'),
+    layout: LS.get('lblLayout', /^[A-I]$/.test(sh.label_layout || '') ? sh.label_layout : 'A'),
     emph: LS.get('lblEmph', ['both', 'retail', 'wholesale'].includes(sh.label_style) ? sh.label_style : 'both'),
     prefix: sh.wcode_prefix == null ? 'NRRL' : sh.wcode_prefix, mult: sh.wcode_mult || 2,
     // what to show and how big the rates are: this phone's own choice, else the laptop's
@@ -1173,9 +1173,9 @@ function labelCanvas(it, size, prefs) {
   const width = (t, k, st) => { g.font = font(100, st); return g.measureText(t).width / 100 * k; };
   const be = {
     fit: NrrlLabels.smoothFit(width),
-    barcode(code, maxW, maxH) {
+    barcode(code, maxW, maxH, o) {
       const c = code128(code); if (!c || maxH < 4 * DOT) return null;
-      for (let d = 3; d >= 2; d--) if ((c.modules + 8) * d <= maxW) return { w: c.modules * d, d, bars: c.bars, modules: c.modules };
+      for (let d = o && o.wide ? 4 : 3; d >= 2; d--) if ((c.modules + (o && o.wide ? 4 : 8)) * d <= maxW) return { w: c.modules * d, d, bars: c.bars, modules: c.modules };
       return null;
     },
   };

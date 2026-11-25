@@ -27,7 +27,7 @@ function makeHandlers(ctx) {
   // the print window's choices on top of the saved settings (shown before they are saved)
   const withShow = show => ({ ...settings(), ...(show ? { label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0',
     ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}),
-    ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-H]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) } : {}) });
+    ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-I]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) } : {}) });
   let user = null, ownerUntil = 0;
   const can = k => !user || user.role === 'owner' || Date.now() < ownerUntil || !!((user.perms && k in user.perms) ? user.perms[k] : PERM_DEF[k]);
   const deny = k => { if (!can(k)) throw new Error('You don’t have access to this. Ask the owner.'); };
@@ -181,7 +181,7 @@ function makeHandlers(ctx) {
       const missing = entries.find(e => !e.item);
       if (missing) throw new Error('An item on the label list no longer exists. Remove it and try again.');
       if (show && show.size && show.size !== st().getSetting('label_size')) st().useLabelSize(show.size);
-      if (show) st().saveSettings({ label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0', ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}), ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-H]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) });
+      if (show) st().saveSettings({ label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0', ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}), ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-I]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) });
       return ctx.printLabels(entries, settings());
     },
     'print.labelPreview': async (code, show) => {
@@ -190,7 +190,7 @@ function makeHandlers(ctx) {
       const { across } = P.labelSize(s);
       return (await P.buildLabels([{ item: it, count: across }], s)).html;
     },
-    // a small picture of the label in each design (A–H), with the choices made in the print window
+    // a small picture of the label in each design (A–I), with the choices made in the print window
     'print.labelDesigns': async (code, show) => {
       const s = withShow(show);
       const it = (code && st().getItem(code)) || { code: 'NR10001', name: 'Sample item name', retail: 99 };
