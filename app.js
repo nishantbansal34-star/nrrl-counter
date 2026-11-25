@@ -1192,7 +1192,7 @@ function labelCanvas(it, size, prefs) {
     else if (e.kind === 'barcode') { barcodeOk = true; for (const [x, w] of e.item.bars) g.fillRect(e.x + x * e.item.d, e.y, w * e.item.d, e.h); }
     else if (e.kind === 'text') {
       g.fillStyle = e.color === 'white' ? '#fff' : '#000'; g.textBaseline = 'alphabetic';
-      for (const p of e.fit.parts) { g.font = font(p.size, e.fit.style); g.fillText(p.t, e.x + p.x, e.y + e.fit.base); }
+      for (const p of e.fit.parts) { g.font = font(p.size, e.fit.style); g.fillText(p.t, e.x + p.x, e.y + e.fit.base, Math.max(1, p.w || 1e5)); } // narrower letters when squeezed
     }
   }
   // pure black and white: thermal printers turn grey into speckles
@@ -1201,8 +1201,8 @@ function labelCanvas(it, size, prefs) {
   g.putImageData(im, 0, 0);
   return { cv, wmm, hmm, fits: barcodeOk };
 }
-async function shareLabels(it, size, copies) {
-  const { cv, wmm, hmm } = labelCanvas(it, size);
+async function shareLabels(it, size, copies, prefs) {
+  const { cv, wmm, hmm } = labelCanvas(it, size, prefs);
   const N = window.NrrlNative;
   const safe = String(it.code).replace(/[^\w-]+/g, '_');
   if (canPdf()) {
@@ -1224,108 +1224,155 @@ async function shareLabels(it, size, copies) {
 function openLabelSheet(it, opts = {}) {
   let size = LS.get('lblSize', '50x25'); if (!LABEL_SIZES[size]) size = '50x25';
   let copies = 1;
+  const P = labelPrefs(); // this phone's choices: layout, which rate is bigger, what to show, rate size
+  const NL = window.NrrlLabels;
+  const sizes = NL.RATE_SIZES;
+  const short = { Normal: 'Normal', Large: 'Large', 'Extra large': 'X-large', Huge: 'Huge', Biggest: 'Biggest' };
+  const prefix = (lblShared || {}).wcode_prefix ?? 'NRRL';
+  const both = NL.rates(it, { ...P, showRetail: true, showWholesale: true });
+  const rTxt = both.r ? both.r.main + both.r.unit : 'no retail rate', wTxt = both.w ? both.w.main + both.w.unit : 'no wholesale rate';
   const d = openSheet('labelSheet', `
-    <h3>${opts.fresh ? 'Item saved' : 'Barcode label'}</h3>
-    <p class="s">${esc(it.name)} · ${money(it.retail)}</p>
+    <h3>${opts.fresh ? 'Item saved · print labels' : 'Print labels'}</h3>
+    <p class="s">${esc(it.name)} · <span class="num">${esc(it.code)}</span></p>
     <div class="lblprev" id="lPrev"></div>
-    <div class="field" style="margin-top:12px"><span class="lbl">Label size</span>
-      <div class="seg" role="group" aria-label="Label size" id="lSize">${Object.keys(LABEL_SIZES).map(k => `<button type="button" data-size="${k}" aria-pressed="${k === size}">${k.replace('x', ' × ')} mm</button>`).join('')}</div></div>
-    <div class="grid2" style="margin-top:12px">
-      <div class="field"><label class="lbl" for="lLayout">Layout</label><select id="lLayout">${NrrlLabels.LAYOUTS.map(([k, l]) => `<option value="${k}"${labelPrefs().layout === k ? ' selected' : ''}>${k} · ${esc(l)}</option>`).join('')}</select></div>
-      <div class="field"><label class="lbl" for="lEmph">Bigger rate</label><select id="lEmph">${NrrlLabels.EMPHASIS.map(([k, l]) => `<option value="${k}"${labelPrefs().emph === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+    <p class="lcap" id="lCap"></p>
+    <p class="hint warnline" id="lFit" hidden></p>
+
+    <div class="lsec">
+      <div class="lrow"><span class="lbl">Rate size</span><b class="lval" id="lRateName"></b></div>
+      <div class="rsz" role="radiogroup" aria-label="Rate size" id="lRate">${sizes.map((r, i) => `<button type="button" role="radio" data-v="${r.v}" aria-label="${r.name}"><span class="g" style="font-size:${(0.85 + i * 0.28).toFixed(2)}rem">₹</span><small>${short[r.name] || r.name}</small></button>`).join('')}</div>
     </div>
-    <div class="grid2" style="margin-top:12px">
-      <label class="field check"><input type="checkbox" id="lShowR" ${labelPrefs().showRetail ? 'checked' : ''}><span>Retail rate</span></label>
-      <label class="field check"><input type="checkbox" id="lShowW" ${labelPrefs().showWholesale ? 'checked' : ''}><span>Wholesale code (${esc((lblShared || {}).wcode_prefix ?? 'NRRL')})</span></label>
-      <div class="field w"><label class="lbl" for="lRate">Rate size</label><select id="lRate">${[[100, 'Normal'], [130, 'Large'], [160, 'Extra large'], [200, 'Huge'], [250, 'Biggest']].map(([k, l]) => `<option value="${k}"${Math.round(labelPrefs().rateScale * 100) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+
+    <div class="lsec">
+      <span class="lbl">On the label</span>
+      <div class="lchips">
+        <button type="button" class="lchip" id="lShowR" ${both.r ? '' : 'disabled'}><span class="tick" aria-hidden="true"></span><span>Retail rate<small>${esc(rTxt)}</small></span></button>
+        <button type="button" class="lchip" id="lShowW" ${both.w ? '' : 'disabled'}><span class="tick" aria-hidden="true"></span><span>Wholesale code<small>${esc(wTxt)}</small></span></button>
+      </div>
+      <div class="lemph" id="lEmphWrap"><span class="lbl">Bigger rate</span>
+        <div class="seg full" role="group" aria-label="Bigger rate" id="lEmph">${NL.EMPHASIS.map(([k, l]) => `<button type="button" data-e="${k}">${k === 'both' ? 'Equal' : k === 'retail' ? 'Retail' : 'Wholesale'}</button>`).join('')}</div></div>
     </div>
-    <p class="hint" id="lFit" hidden style="margin-top:6px"></p>
-    <div class="field" style="margin-top:12px"><span class="lbl">How many labels</span>
-      <div class="ctr" style="margin:0"><button class="qb" type="button" id="lLess" aria-label="One less">−</button><input type="number" inputmode="numeric" id="lCopies" value="1" min="1" max="500" aria-label="Copies"><button class="qb" type="button" id="lMore" aria-label="One more">+</button></div></div>
-    <div class="remote" id="lRemote" hidden>
-      <div class="lbl">Print on the laptop’s label printer</div>
-      <select id="lPc" hidden></select>
-      <div class="seg" role="group" aria-label="Laptop label size" id="lPcSize"></div>
-      <button class="btn primary w" type="button" id="lPcGo">Print on laptop</button>
+
+    <div class="lsec">
+      <div class="lrow"><span class="lbl">Design</span><b class="lval" id="lLayoutName"></b></div>
+      <div class="lthumbs" role="radiogroup" aria-label="Label design" id="lLayout">${NL.LAYOUTS.map(([k, l]) => `<button type="button" role="radio" data-l="${k}" aria-label="${k} · ${esc(l)}"><span class="tc"></span><small>${k}</small></button>`).join('')}</div>
+    </div>
+
+    <div class="lsec" id="lPhoneSize"><span class="lbl">Label size</span>
+      <div class="seg wrap" role="group" aria-label="Label size" id="lSize">${Object.keys(LABEL_SIZES).map(k => `<button type="button" data-size="${k}" aria-pressed="${k === size}">${k.replace('x', ' × ')} mm</button>`).join('')}</div></div>
+
+    <div class="lsec" id="lRemote" hidden>
+      <div class="lrow"><span class="lbl">Laptop label roll</span><select id="lPc" hidden aria-label="Laptop"></select></div>
+      <div class="seg wrap" role="group" aria-label="Laptop label size" id="lPcSize"></div>
       <p class="hint warn" id="lPcOld" hidden></p>
-      <p class="hint" id="lPcState" aria-live="polite"></p>
     </div>
-    <p class="hint" style="margin-top:10px" id="lHint">${canPdf() ? 'Share opens the label as a PDF: print it from your label printer’s app, or send it on WhatsApp.' : 'Saves the label as a picture.'} <span id="lPcHint">Checking for a laptop printer…</span></p>
+
+    <div class="lsec lcount">
+      <span class="lbl">How many labels</span>
+      <div class="ctr" style="margin:0"><button class="qb" type="button" id="lLess" aria-label="One less">−</button><input type="number" inputmode="numeric" id="lCopies" value="1" min="1" max="500" aria-label="How many labels"><button class="qb" type="button" id="lMore" aria-label="One more">+</button></div>
+    </div>
+
+    <button class="btn primary w lgo" type="button" id="lPcGo" hidden>Print on laptop</button>
+    <p class="hint lstate" id="lPcState" aria-live="polite"></p>
     <div class="acts2">
-      ${opts.fresh ? '<button class="btn" type="button" id="lAnother">Add another item</button>' : '<button class="btn" type="button" id="lClose">Close</button>'}
-      <button class="btn primary" type="button" id="lShare">${canPdf() ? 'Share label' : 'Save label'}</button>
-      ${opts.fresh ? '<button class="btn w" type="button" id="lClose">Done</button>' : ''}
-    </div>`, opts.onClose);
+      <button class="btn" type="button" id="lShare">${canPdf() ? 'Share as PDF' : 'Save picture'}</button>
+      ${opts.fresh ? '<button class="btn" type="button" id="lAnother">Add another item</button><button class="btn w" type="button" id="lClose">Done</button>' : '<button class="btn" type="button" id="lClose">Close</button>'}
+    </div>
+    <p class="hint" style="margin-top:10px" id="lPcHint">Checking for a laptop printer…</p>`, opts.onClose);
+
+  const save = () => { LS.set('lblLayout', P.layout); LS.set('lblEmph', P.emph); LS.set('lblShowR', P.showRetail); LS.set('lblShowW', P.showWholesale); LS.set('lblRate', Math.round(P.rateScale * 100)); };
+  let thumbKey = '';
   const draw = () => {
-    const { cv, fits } = labelCanvas(it, size); cv.className = 'lblcv'; const p = $('#lPrev', d); p.innerHTML = ''; p.appendChild(cv);
+    const { cv, fits } = labelCanvas(it, size, P); cv.className = 'lblcv'; const p = $('#lPrev', d); p.innerHTML = ''; p.appendChild(cv);
     const f = $('#lFit', d); f.hidden = fits; f.textContent = fits ? '' : `Code ${it.code} is too long for this label size. Use a wider label, or give the item a short code (New code).`;
+    const [w, h] = (LABEL_SIZES[size] || size.split('x').map(Number));
+    $('#lCap', d).textContent = `${w} × ${h} mm${pc && pcSize && +pcSize.across > 1 ? ` · ${+pcSize.across} across on the roll` : ''}`;
+    // the controls show the current choices
+    const rsNow = NL.rateSize(P.rateScale);
+    $$('#lRate button', d).forEach(b => b.setAttribute('aria-checked', +b.dataset.v === rsNow.v));
+    $('#lRateName', d).textContent = rsNow.name;
+    $('#lShowR', d).setAttribute('aria-pressed', !!P.showRetail && !!both.r);
+    $('#lShowW', d).setAttribute('aria-pressed', !!P.showWholesale && !!both.w);
+    const two = P.showRetail && P.showWholesale && both.r && both.w;
+    $('#lEmphWrap', d).hidden = !two;
+    $$('#lEmph button', d).forEach(b => b.setAttribute('aria-pressed', b.dataset.e === P.emph));
+    $$('#lLayout button', d).forEach(b => b.setAttribute('aria-checked', b.dataset.l === P.layout));
+    $('#lLayoutName', d).textContent = (NL.LAYOUTS.find(x => x[0] === P.layout) || ['', ''])[1];
+    // small pictures of every design, with the same choices (only redrawn when something they show changed)
+    const key = JSON.stringify([size, P.emph, P.showRetail, P.showWholesale, P.rateScale]);
+    if (key !== thumbKey) {
+      thumbKey = key;
+      $$('#lLayout button', d).forEach(b => { const t = labelCanvas(it, size, { ...P, layout: b.dataset.l }).cv; t.className = 'tcv'; const c = $('.tc', b); c.innerHTML = ''; c.appendChild(t); });
+    }
   };
-  draw();
-  if (!Object.keys(lblShared || {}).length) loadLabelSettings().then(() => { if ($('#labelSheet')) draw(); });
-  $('#lLayout', d).addEventListener('change', e => { LS.set('lblLayout', e.target.value); draw(); });
-  $('#lEmph', d).addEventListener('change', e => { LS.set('lblEmph', e.target.value); draw(); });
-  $('#lShowR', d).addEventListener('change', e => { LS.set('lblShowR', e.target.checked); draw(); });
-  $('#lShowW', d).addEventListener('change', e => { LS.set('lblShowW', e.target.checked); draw(); });
-  $('#lRate', d).addEventListener('change', e => { LS.set('lblRate', +e.target.value); draw(); });
-  $('#lSize', d).addEventListener('click', e => { const b = e.target.closest('[data-size]'); if (!b) return; size = b.dataset.size; LS.set('lblSize', size); $$('#lSize button', d).forEach(x => x.setAttribute('aria-pressed', x === b)); draw(); });
-  const setC = n => { copies = Math.max(1, Math.min(500, Math.round(+n) || 1)); $('#lCopies', d).value = copies; };
+  const change = fn => { fn(); save(); draw(); };
+  $('#lRate', d).addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (b) change(() => { P.rateScale = +b.dataset.v / 100; }); });
+  $('#lShowR', d).addEventListener('click', () => change(() => { P.showRetail = !P.showRetail; if (!P.showRetail && !P.showWholesale && both.w) P.showWholesale = true; }));
+  $('#lShowW', d).addEventListener('click', () => change(() => { P.showWholesale = !P.showWholesale; if (!P.showRetail && !P.showWholesale && both.r) P.showRetail = true; }));
+  $('#lEmph', d).addEventListener('click', e => { const b = e.target.closest('[data-e]'); if (b) change(() => { P.emph = b.dataset.e; }); });
+  $('#lLayout', d).addEventListener('click', e => { const b = e.target.closest('[data-l]'); if (b) change(() => { P.layout = b.dataset.l; }); });
+  $('#lSize', d).addEventListener('click', e => { const b = e.target.closest('[data-size]'); if (!b) return; size = phoneSize = b.dataset.size; LS.set('lblSize', size); $$('#lSize button', d).forEach(x => x.setAttribute('aria-pressed', x === b)); draw(); });
+  const goText = () => { if (pc) $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`; };
+  const setC = n => { copies = Math.max(1, Math.min(500, Math.round(+n) || 1)); $('#lCopies', d).value = copies; goText(); };
   $('#lLess', d).addEventListener('click', () => setC(copies - 1));
   $('#lMore', d).addEventListener('click', () => setC(copies + 1));
   $('#lCopies', d).addEventListener('change', e => setC(e.target.value));
-  $('#lShare', d).addEventListener('click', () => shareLabels(it, size, copies));
+  $('#lShare', d).addEventListener('click', () => shareLabels(it, size, copies, P));
   $$('#lClose', d).forEach(b => b.addEventListener('click', closeSheet));
+  $('#lAnother', d)?.addEventListener('click', () => { closeSheet(); openItemSheet(null); });
+
   // print straight on a laptop's label printer: the phone sends the job, the laptop prints it
   let pcs = [], pc = null, pcSize = null, phoneSize = size;
   const pcLabel = z => `${+z.w} × ${+z.h} mm${+z.across > 1 ? ` · ${+z.across} across` : ''}`;
   const showPc = () => {
     const on = !!pc;
-    $('#lRemote', d).hidden = !on; $('#lSize', d).closest('.field').hidden = on;
+    $('#lRemote', d).hidden = !on; $('#lPcGo', d).hidden = !on; $('#lPhoneSize', d).hidden = on;
     $('#lShare', d).classList.toggle('primary', !on);
     if (!on) { size = phoneSize; draw(); return; }
     $('#lPc', d).hidden = pcs.length < 2;
     $('#lPc', d).innerHTML = pcs.map((p, i) => `<option value="${i}"${p === pc ? ' selected' : ''}>${esc(p.name)} · ${esc(p.printer)}</option>`).join('');
-    const sizes = Array.isArray(pc.sizes) && pc.sizes.length ? pc.sizes : [{ id: '', w: 50, h: 25, across: 1 }];
-    if (!pcSize || !sizes.some(z => z.id === pcSize.id)) pcSize = sizes.find(z => z.id === LS.get('pcSize:' + pc.device_id, pc.size_id)) || sizes.find(z => z.id === pc.size_id) || sizes[0];
-    $('#lPcSize', d).innerHTML = sizes.map(z => `<button type="button" data-z="${esc(z.id)}" aria-pressed="${z === pcSize}">${pcLabel(z)}</button>`).join('');
-    $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`;
+    const zs = Array.isArray(pc.sizes) && pc.sizes.length ? pc.sizes : [{ id: '', w: 50, h: 25, across: 1 }];
+    if (!pcSize || !zs.some(z => z.id === pcSize.id)) pcSize = zs.find(z => z.id === LS.get('pcSize:' + pc.device_id, pc.size_id)) || zs.find(z => z.id === pc.size_id) || zs[0];
+    $('#lPcSize', d).innerHTML = zs.map(z => `<button type="button" data-z="${esc(z.id)}" aria-pressed="${z === pcSize}">${pcLabel(z)}</button>`).join('');
     // a laptop older than 1.11.1 ignores Retail rate, Wholesale code and Rate size and uses its own settings
     const oldPc = verBelow(pc.version, '1.11.1');
     $('#lPcOld', d).hidden = !oldPc;
     $('#lPcOld', d).textContent = oldPc ? `${pc.name} has an older NRRL Billing${pc.version ? ' (' + pc.version + ')' : ''}. It will use its own label settings, not Retail rate / Wholesale code / Rate size from here. Click “Update now” on that laptop.` : '';
+    goText();
     size = `${+pcSize.w}x${+pcSize.h}`; draw();
   };
   const loadPcs = async () => {
     try { pcs = await api('counter_label_printers', { p_token: S.token }) || []; } catch (e) { pcs = []; }
     if (!$('#labelSheet')) return;
     pc = pcs.find(p => p.device_id === LS.get('pcPrinter', '')) || pcs[0] || null;
-    $('#lPcHint', d).textContent = pc ? '' : 'To print straight from this phone, keep NRRL Billing open on the laptop that has the label printer.';
+    $('#lPcHint', d).textContent = pc ? (canPdf() ? 'Share as PDF prints from your own label printer’s app, or sends it on WhatsApp.' : '')
+      : 'To print straight from this phone, keep NRRL Billing open on the laptop that has the label printer.' + (canPdf() ? ' Share as PDF prints from your own label printer’s app.' : '');
     showPc();
   };
+  draw();
+  if (!Object.keys(lblShared || {}).length) loadLabelSettings().then(() => { if ($('#labelSheet')) draw(); });
   loadPcs();
   $('#lPc', d).addEventListener('change', e => { pc = pcs[+e.target.value]; pcSize = null; LS.set('pcPrinter', pc.device_id); showPc(); });
   $('#lPcSize', d).addEventListener('click', e => { const b = e.target.closest('[data-z]'); if (!b) return; pcSize = (pc.sizes || []).find(z => z.id === b.dataset.z) || pcSize; LS.set('pcSize:' + pc.device_id, pcSize.id); showPc(); });
-  ['#lLess', '#lMore'].forEach(k => $(k, d).addEventListener('click', () => { if (pc) $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`; }));
-  $('#lCopies', d).addEventListener('change', () => { if (pc) $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`; });
   $('#lPcGo', d).addEventListener('click', async () => {
     const btn = $('#lPcGo', d), st = $('#lPcState', d);
-    btn.disabled = true; st.textContent = 'Sending…';
+    btn.disabled = true; st.className = 'hint lstate'; st.textContent = 'Sending…';
     let job;
-    try { job = await api('counter_print_send', { p_token: S.token, p_device: pc.device_id, p_items: [{ code: it.code, count: copies }], p_opts: { size_id: pcSize.id, layout: $('#lLayout', d).value, emph: $('#lEmph', d).value, retail: $('#lShowR', d).checked, wholesale: $('#lShowW', d).checked, rate: +$('#lRate', d).value } }); }
-    catch (e) { st.textContent = e.message; btn.disabled = false; return; }
+    try { job = await api('counter_print_send', { p_token: S.token, p_device: pc.device_id, p_items: [{ code: it.code, count: copies }], p_opts: { size_id: pcSize.id, layout: P.layout, emph: P.emph, retail: !!P.showRetail, wholesale: !!P.showWholesale, rate: Math.round(P.rateScale * 100) } }); }
+    catch (e) { st.className = 'hint lstate bad'; st.textContent = e.message; btn.disabled = false; return; }
     const t0 = Date.now();
     const poll = async () => {
       if (!$('#labelSheet')) return;
       let r = null; try { r = await api('counter_print_status', { p_token: S.token, p_id: job.id }); } catch (e) {}
       const secs = Math.round((Date.now() - t0) / 1000);
-      if (r && r.status === 'done') { st.textContent = `✓ Printed ${r.labels} label${r.labels === 1 ? '' : 's'} on ${pc.name}`; beep(true); btn.disabled = false; return; }
-      if (r && (r.status === 'failed' || r.status === 'cancelled')) { st.textContent = 'Did not print: ' + (r.problem || r.status); beep(false); btn.disabled = false; return; }
-      if (secs > 90) { st.textContent = `${pc.name} hasn’t answered. Check that NRRL Billing is open and online on it; it prints as soon as it is.`; btn.disabled = false; return; }
+      if (r && r.status === 'done') { st.className = 'hint lstate good'; st.textContent = `✓ Printed ${r.labels} label${r.labels === 1 ? '' : 's'} on ${pc.name}`; beep(true); btn.disabled = false; return; }
+      if (r && (r.status === 'failed' || r.status === 'cancelled')) { st.className = 'hint lstate bad'; st.textContent = 'Did not print: ' + (r.problem || r.status); beep(false); btn.disabled = false; return; }
+      if (secs > 90) { st.className = 'hint lstate bad'; st.textContent = `${pc.name} hasn’t answered. Check that NRRL Billing is open and online on it; it prints as soon as it is.`; btn.disabled = false; return; }
       st.textContent = r && r.status === 'printing' ? 'Printing…' : `Waiting for ${pc.name}…`;
       setTimeout(poll, 1500);
     };
     setTimeout(poll, 800);
   });
-  $('#lAnother', d)?.addEventListener('click', () => { closeSheet(); openItemSheet(null); });
 }
 // true when version a is missing or older than b ("1.11.0" < "1.11.1")
 function verBelow(a, b) {

@@ -61,11 +61,10 @@ function logoFit(s, maxW, maxH) {
   return w > 4 && h > 4 ? { w, h } : null;
 }
 function opts(s, sz) {
-  const rs = parseInt(s.label_rate_size, 10);
   return {
     wD: Math.round(sz.w * sz.dpm), hD: Math.round(sz.h * sz.dpm), dpm: sz.dpm,
     layout: /^[A-H]$/.test(s.label_layout || '') ? s.label_layout : 'A', emph: s.label_style || 'both',
-    rateScale: rs >= 70 && rs <= 300 ? rs / 100 : 1,
+    rateScale: LL.rateSize(parseInt(s.label_rate_size, 10) || 100).v / 100,
     showRetail: s.label_price !== '0', showWholesale: s.label_wcode !== '0',
     prefix: s.wcode_prefix ?? 'NRRL', mult: s.wcode_mult, shop: s.label_shop || 'NRRL',
     logo: !!(s.label_logo && s.label_show_logo !== '0'),
@@ -133,26 +132,32 @@ function svgLabels(entries, s) {
 }
 
 /* ---------- TSPL (direct to the label printer) ---------- */
-// the printer's own fonts (cell width × height in dots), with ×2 and ×3 enlargements for big labels
+// the printer's own fonts (cell width × height in dots). TSPL can enlarge them up to ×10, width and height
+// separately, so a rate can be made taller with narrower letters (condensed) when the label is narrow.
 const BASE = [{ f: '1', cw: 8, ch: 12 }, { f: '2', cw: 12, ch: 20 }, { f: '3', cw: 16, ch: 24 }, { f: '4', cw: 24, ch: 32 }, { f: '5', cw: 32, ch: 48 }];
-const FONTS = [...BASE.map(b => ({ ...b, m: 1 })), ...BASE.slice(1).map(b => ({ ...b, m: 2, cw: b.cw * 2, ch: b.ch * 2 })), { ...BASE[4], m: 3, cw: 96, ch: 144 }]
-  .sort((a, b) => a.ch - b.ch || a.cw - b.cw);
+const FONTS = [];
+for (const b of BASE) for (let my = 1; my <= 6; my++) for (let mx = Math.max(1, Math.ceil(my * 0.5)); mx <= my; mx++)
+  FONTS.push({ f: b.f, mx, my, cw: b.cw * mx, ch: b.ch * my, q: mx / my });
+FONTS.sort((a, b) => b.ch - a.ch || b.q - a.q || b.cw - a.cw);
 const ascii = t => String(t ?? '').replace(/₹/g, 'Rs.').replace(/…/g, '..').replace(/[^\x20-\x7e]/g, '').replace(/"/g, "'");
-function tsplFit(runs, maxW, maxH) {
+function tsplFit(runs, maxW, maxH, style) {
   runs = runs.map(([t, k]) => [ascii(t), k]);
-  const fits = FONTS.filter(f => f.ch <= maxH);
-  for (let i = fits.length - 1; i >= 0; i--) {
-    const main = fits[i];
+  const sq = Math.max(0.5, Math.min(1, +(style && style.squeeze) || 1));
+  const ok = FONTS.filter(f => f.q >= sq - 1e-9);
+  const smallFor = (h, q) => ok.find(g => g.ch <= h && g.q >= q - 1e-9) || ok.find(g => g.ch <= h) || FONTS[FONTS.length - 1];
+  // tallest first; at the same height the widest letters (least condensed) first
+  for (const main of ok) {
+    if (main.ch > maxH) continue;
     let x = 0;
     const parts = runs.map(([t, k]) => {
-      const f = k >= 1 ? main : (FONTS.filter(g => g.ch <= main.ch * Math.max(k + 0.05, 0.6)).pop() || FONTS[0]);
+      const f = k >= 1 ? main : smallFor(main.ch * Math.max(k + 0.05, 0.55), main.q);
       const p = { t, font: f, x, dy: main.ch - f.ch }; x += t.length * f.cw; return p;
     });
-    if (x <= maxW) return { w: x, h: main.ch, base: main.ch, parts, style: {} };
+    if (x <= maxW) return { w: x, h: main.ch, base: main.ch, parts, style: style || {} };
   }
-  const f = FONTS[0];
+  const f = FONTS[FONTS.length - 1];
   let x = 0;
-  return { w: runs.reduce((a, [t]) => a + t.length * f.cw, 0), h: f.ch, base: f.ch, parts: runs.map(([t]) => { const p = { t, font: f, x, dy: 0 }; x += t.length * f.cw; return p; }), style: {} };
+  return { w: runs.reduce((a, [t]) => a + t.length * f.cw, 0), h: f.ch, base: f.ch, parts: runs.map(([t]) => { const p = { t, font: f, x, dy: 0 }; x += t.length * f.cw; return p; }), style: style || {} };
 }
 function tsplLogo(s, hDots, maxW) {
   let b; try { b = JSON.parse(s.label_logo_bits || ''); } catch (e) { return null; }
@@ -178,7 +183,7 @@ function tsplLabels(entries, s) {
   const sz = sizeOf(s), list = expand(entries), o = opts(s, sz);
   const vgap = s.label_vgap === '' || s.label_vgap == null || !isFinite(+s.label_vgap) ? 2 : Math.max(0, +s.label_vgap);
   const be = {
-    fit: (runs, maxW, maxH) => tsplFit(runs, maxW, maxH),
+    fit: (runs, maxW, maxH, style) => tsplFit(runs, maxW, maxH, style),
     barcode: (code, maxW, maxH) => barcodeFit(code, maxW, maxH, sz, s),
     logo: (maxW, maxH) => { const l = tsplLogo(s, Math.round(maxH), Math.round(maxW)); return l ? { w: l.w, h: l.h, bmp: l } : null; },
   };
@@ -212,7 +217,7 @@ function tsplLabels(entries, s) {
         else if (f.bc) out.push(`BARCODE ${f.bc.x + x0},${f.bc.y},"${TYPE[f.bc.item.kind]}",${f.bc.h},0,0,${f.bc.item.d},${f.bc.item.d},"${ascii(it.code)}"`);
         else if (f.logo) out.push(`BITMAP ${f.logo.x + x0},${f.logo.y},${f.logo.item.bmp.wb},${f.logo.item.bmp.h},0,` + f.logo.item.bmp.data);
       }
-      for (const t of c.texts) out.push(`TEXT ${t.x + x0},${t.y},"${t.p.font.f}",0,${t.p.font.m},${t.p.font.m},"${t.p.t}"`);
+      for (const t of c.texts) out.push(`TEXT ${t.x + x0},${t.y},"${t.p.font.f}",0,${t.p.font.mx},${t.p.font.my},"${t.p.t}"`);
       for (const l of c.last) out.push(`REVERSE ${l.rev[0] + x0},${l.rev[1]},${l.rev[2]},${l.rev[3]}`);
     });
     out.push('PRINT 1,1');
@@ -220,4 +225,10 @@ function tsplLabels(entries, s) {
   return { data: out.join('\r\n') + '\r\n', count: list.length };
 }
 
-module.exports = { svgLabels, tsplLabels, sizeOf, bars, LL };
+// one label as a standalone SVG picture (the design pictures in the print window)
+function svgLabel(item, s) {
+  const sz = sizeOf(s), L = svgOne(item, s, sz);
+  return `<svg viewBox="0 0 ${L.wD} ${L.hD}" width="${L.wD}" height="${L.hD}" fill="#000" xmlns="http://www.w3.org/2000/svg"><rect width="${L.wD}" height="${L.hD}" fill="#fff"/>${L.svg}</svg>`;
+}
+
+module.exports = { svgLabels, svgLabel, tsplLabels, sizeOf, bars, LL, _svgBackend: (s, sz) => svgBackend(s, sz), _opts: (s, sz) => opts(s, sz) };

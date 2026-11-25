@@ -917,8 +917,60 @@ const LABEL_LAYOUTS = [['A', 'A · Two lines, full width'], ['B', 'B · Two colu
 const LABEL_STYLES = [['both', 'Both rates equal'], ['retail', 'Retail rate bigger'], ['wholesale', 'Wholesale rate bigger']];
 const styleSel = (id, v) => `<select id="${id}" style="width:auto">${LABEL_STYLES.map(([k, l]) => `<option value="${k}"${String(v || 'both') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
 const layoutSel = (id, v) => `<select id="${id}" style="width:auto">${LABEL_LAYOUTS.map(([k, l]) => `<option value="${k}"${String(v || 'A') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
-const styleField = () => `<label style="display:flex;gap:8px;align-items:center">Layout ${layoutSel('lLayout', S.settings.label_layout)}</label><label style="display:flex;gap:8px;align-items:center">${styleSel('lStyle', S.settings.label_style)}</label>`;
-const rateField = () => `<label style="display:flex;gap:8px;align-items:center">Rate size ${rateSel('lRate', S.settings.label_rate_size)}</label>`;
+// the label choices in the print window and the label list: rate size, what is on the label, which rate
+// is bigger and the design (with a small picture of each). Hidden inputs keep the values; any change fires
+// a "change" event so the live preview updates.
+const nearestRate = v => RATE_SIZES.reduce((a, b) => Math.abs(+b[0] - (+v || 100)) < Math.abs(+a[0] - (+v || 100)) ? b : a)[0];
+function labelChoices(it) {
+  const s = S.settings, rs = nearestRate(s.label_rate_size), style = s.label_style || 'both', lay = /^[A-H]$/.test(s.label_layout || '') ? s.label_layout : 'A';
+  const pre = s.wcode_prefix ?? 'NRRL', mult = isFinite(+s.wcode_mult) && +s.wcode_mult > 0 ? +s.wcode_mult : 2;
+  const rTxt = it && +it.retail > 0 ? `₹${+it.retail}` : '', wTxt = it && +it.wholesale > 0 ? `${pre}${Math.round(+it.wholesale * mult * 100) / 100}` : '';
+  return `<div class="lchoices w">
+    <div class="lcrow"><span class="lbl">Rate size</span>
+      <div class="rsz" role="radiogroup" aria-label="Rate size" data-for="lRate">${RATE_SIZES.map(([k, l], i) => `<button type="button" role="radio" data-v="${k}" aria-checked="${k === rs}"><span class="g" style="font-size:${13 + i * 5}px">₹</span><small>${l}</small></button>`).join('')}</div>
+      <input type="hidden" id="lRate" value="${rs}"></div>
+    <div class="lcrow"><span class="lbl">On the label</span>
+      <div class="lchips">
+        <label class="lchip"><input type="checkbox" id="lRetail" ${s.label_price !== '0' ? 'checked' : ''}><span>Retail rate${rTxt ? `<small>${esc(rTxt)}</small>` : ''}</span></label>
+        <label class="lchip"><input type="checkbox" id="lWs" ${s.label_wcode !== '0' ? 'checked' : ''}><span>Wholesale code${wTxt ? `<small>${esc(wTxt)}</small>` : `<small>${esc(pre)}…</small>`}</span></label>
+        ${s.label_logo ? `<label class="lchip"><input type="checkbox" id="lLogo" ${s.label_show_logo !== '0' ? 'checked' : ''}><span>Logo</span></label>` : ''}
+      </div></div>
+    <div class="lcrow" id="lStyleRow"><span class="lbl">Bigger rate</span>
+      <div class="seg" data-for="lStyle">${LABEL_STYLES.map(([k]) => `<button type="button" data-v="${k}" aria-pressed="${k === style}">${k === 'both' ? 'Equal' : k === 'retail' ? 'Retail' : 'Wholesale'}</button>`).join('')}</div>
+      <input type="hidden" id="lStyle" value="${style}"></div>
+    <div class="lcrow"><span class="lbl">Design</span>
+      <div class="lthumbs" role="radiogroup" aria-label="Label design" data-for="lLayout">${LABEL_LAYOUTS.map(([k, l]) => `<button type="button" role="radio" data-v="${k}" aria-checked="${k === lay}" title="${esc(l)}"><span class="tc"></span><small>${esc(l.split(' (')[0])}</small></button>`).join('')}</div>
+      <input type="hidden" id="lLayout" value="${lay}"></div>
+  </div>`;
+}
+function wireLabelChoices(m, code) {
+  const sync = () => {
+    $('#lStyleRow', m).hidden = !($('#lRetail', m).checked && $('#lWs', m).checked);
+    m.querySelectorAll('.lchoices [data-for]').forEach(g => { const v = $('#' + g.dataset.for, m).value; g.querySelectorAll('[data-v]').forEach(b => b.setAttribute(b.hasAttribute('role') ? 'aria-checked' : 'aria-pressed', b.dataset.v === v)); });
+  };
+  let seq = 0;
+  const designs = async () => {
+    const n = ++seq;
+    try {
+      const svgs = await rpc('print.labelDesigns', code || '', showOpts(m));
+      if (n !== seq) return;
+      m.querySelectorAll('.lthumbs [data-v]').forEach(b => { $('.tc', b).innerHTML = svgs[b.dataset.v] || ''; });
+    } catch (e) { /* the pictures are only a help */ }
+  };
+  m.querySelector('.lchoices').addEventListener('click', e => {
+    const b = e.target.closest('[data-for] [data-v]'); if (!b) return;
+    const inp = $('#' + b.closest('[data-for]').dataset.for, m);
+    if (inp.value === b.dataset.v) return;
+    inp.value = b.dataset.v; inp.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  m.querySelector('.lchoices').addEventListener('change', e => {
+    // never both off: switching one off when the other is off switches the other on
+    if (e.target.id === 'lRetail' && !e.target.checked && !$('#lWs', m).checked) $('#lWs', m).checked = true;
+    if (e.target.id === 'lWs' && !e.target.checked && !$('#lRetail', m).checked) $('#lRetail', m).checked = true;
+    sync(); if (e.target.id !== 'lLayout') designs();
+  });
+  sync(); designs();
+}
 const logoTick = () => S.settings.label_logo ? `<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lLogo" ${S.settings.label_show_logo !== '0' ? 'checked' : ''}> Show logo</label>` : '';
 async function openLabels(it, keepCount) {
   if (!(await requirePerm('labels', 'Printing labels is switched off for you'))) return;
@@ -933,12 +985,9 @@ async function openLabels(it, keepCount) {
       <label class="f"><span>How many labels</span><input type="number" id="lCount" min="1" max="1000" value="${def}"></label>
       ${chips ? '' : `<div class="f"><span class="lbl">Roll</span><div style="padding-top:8px">${across} across · ${esc(info.w)} × ${esc(info.h)} mm</div></div>`}
       ${chips ? `<div class="f w"><span class="lbl">Label size</span>${chips}</div>` : ''}
-<div class="w" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">${styleField()}${rateField()}${logoTick()}
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
-        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
-      </div>
-      <div class="w lprev" id="lPrev"></div>
+<div class="w lprev" id="lPrev"></div>
       <p class="muted small w" id="lRows"></p>
+      ${labelChoices(it)}
       <p class="muted small w">To mix different items on the same sheet with no blank labels, use <b>Add to label list</b>, then print the whole list at once from Items &amp; stock.</p>
     </div>
     <div class="err" id="lErr"></div>
@@ -957,11 +1006,12 @@ async function openLabels(it, keepCount) {
     const box = $('#lPrev', m); if (!box) return;
     try {
       const html = await rpc('print.labelPreview', it.code, showOpts(m));
-      const k = 3.78, w = Math.round(info.pageW * k), h = Math.round(info.h * k), sc = Math.min(2.2, 600 / w);
+      const k = 3.78, w = Math.round(info.pageW * k), h = Math.round(info.h * k), sc = Math.min(2.2, Math.max(200, box.clientWidth - 28) / w); // fit the box
       box.innerHTML = `<div style="width:${Math.round(w * sc)}px;height:${Math.round(h * sc)}px;margin:auto"><iframe title="Label preview" sandbox srcdoc="${esc(html)}" style="border:0;width:${w}px;height:${h}px;background:#fff;transform:scale(${sc});transform-origin:0 0;box-shadow:0 1px 6px rgba(0,0,0,.2)"></iframe></div>`;
     } catch (e) { box.textContent = ''; }
   };
   prev();
+  wireLabelChoices(m, it.code);
   m.addEventListener('change', e => { if (e.target.closest('#lLayout,#lStyle,#lRate,#lRetail,#lWs,#lLogo')) prev(); });
   $('#lShort', m)?.addEventListener('click', async () => {
     if (!(await requirePerm('edit', 'Changing an item code needs the owner'))) return;
@@ -991,10 +1041,7 @@ async function openLabelList() {
   if (!(await requirePerm('labels', 'Printing labels is switched off for you'))) return;
   const across = Math.max(1, parseInt(S.settings.label_across, 10) || 1), chips = await sizeChips();
   const m = openModal(`<h2>Label list</h2>${chips ? `<div class="f"><span class="lbl">Label size</span>${chips}</div>` : ''}<div id="qLong"></div><div id="qBody"></div>
-    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px;align-items:center">${styleField()}${rateField()}${logoTick()}
-      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lRetail" ${S.settings.label_price !== '0' ? 'checked' : ''}> Show retail price</label>
-      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="lWs" ${S.settings.label_wcode !== '0' ? 'checked' : ''}> Show wholesale code (${esc(S.settings.wcode_prefix ?? 'NRRL')})</label>
-    </div><div class="err" id="qErr"></div>
+    ${labelChoices(S.items.get((S.labelQ[0] || {}).code))}<div class="err" id="qErr"></div>
     <div class="foot"><button type="button" class="btn danger left" id="qClear">Clear list</button><button type="button" class="btn" data-close>Close</button><button type="button" class="btn accent" id="qGo">Print all</button></div>`, { wide: true });
   const draw = () => {
     S.labelQ = S.labelQ.filter(q => S.items.has(q.code));
@@ -1008,6 +1055,7 @@ async function openLabelList() {
     $('#qFill', m)?.addEventListener('click', () => { S.labelQ[S.labelQ.length - 1].count += blank; saveQ(); draw(); });
   };
   draw();
+  wireLabelChoices(m, (S.labelQ[0] || {}).code);
   $('#lSizes', m)?.addEventListener('click', async e => {
     const b = e.target.closest('[data-size]'); if (!b || b.getAttribute('aria-pressed') === 'true') return;
     try { S.settings = await rpc('labels.useSize', b.dataset.size); } catch (err) { toast(err.message, { err: true }); return; }

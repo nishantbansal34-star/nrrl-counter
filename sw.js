@@ -1,5 +1,5 @@
 // Keeps the app shell available offline; data calls always go to the network.
-const C = 'nrrl-counter-v2';
+const C = 'nrrl-counter-v3';
 const SHELL = ['./', './index.html', './app.js', './label-layouts.js', './manifest.webmanifest', './icon-192.png',
   'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(C).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });

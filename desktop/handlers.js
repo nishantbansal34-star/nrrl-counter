@@ -24,6 +24,10 @@ const PERM_DEF = { bill: true, rate: false, stock: true, add: true, edit: false,
 function makeHandlers(ctx) {
   const st = () => ctx.getStore();
   const settings = () => { const s = st().getSettings(); return s; };
+  // the print window's choices on top of the saved settings (shown before they are saved)
+  const withShow = show => ({ ...settings(), ...(show ? { label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0',
+    ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}),
+    ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-H]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) } : {}) });
   let user = null, ownerUntil = 0;
   const can = k => !user || user.role === 'owner' || Date.now() < ownerUntil || !!((user.perms && k in user.perms) ? user.perms[k] : PERM_DEF[k]);
   const deny = k => { if (!can(k)) throw new Error('You don’t have access to this. Ask the owner.'); };
@@ -181,13 +185,19 @@ function makeHandlers(ctx) {
       return ctx.printLabels(entries, settings());
     },
     'print.labelPreview': async (code, show) => {
-      // choices made in the print window, shown before they are saved
-      const s = { ...settings(), ...(show ? { label_price: show.retail ? '1' : '0', label_wcode: show.wholesale ? '1' : '0',
-        ...(show.logo != null ? { label_show_logo: show.logo ? '1' : '0' } : {}), ...(show.rateSize ? { label_rate_size: String(show.rateSize) } : {}),
-        ...(['both', 'retail', 'wholesale'].includes(show.style) ? { label_style: show.style } : {}), ...(/^[A-H]$/.test(show.layout || '') ? { label_layout: show.layout } : {}) } : {}) };
+      const s = withShow(show);
       const it = (code && st().getItem(code)) || { code: 'NR10001', name: 'Sample item name', retail: 99 };
       const { across } = P.labelSize(s);
       return (await P.buildLabels([{ item: it, count: across }], s)).html;
+    },
+    // a small picture of the label in each design (A–H), with the choices made in the print window
+    'print.labelDesigns': async (code, show) => {
+      const s = withShow(show);
+      const it = (code && st().getItem(code)) || { code: 'NR10001', name: 'Sample item name', retail: 99 };
+      const LR = require('./label-render');
+      const out = {};
+      for (const [k] of LR.LL.LAYOUTS) out[k] = LR.svgLabel(it, { ...s, label_layout: k });
+      return out;
     },
     'print.testLabel': async () => {
       const first = st().allItems()[0];

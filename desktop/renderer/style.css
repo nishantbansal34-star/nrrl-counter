@@ -252,3 +252,27 @@ table.grid tr.warnrow td:nth-child(3) { color: var(--bad); font-weight: 600; }
 .updbox .btn { padding: 5px 10px; font-size: 12px; flex: 1; }
 
 .lprev{background:var(--sunk, rgba(0,0,0,.04));border-radius:10px;padding:14px;min-height:40px}
+
+/* label choices in the print window and the label list */
+.lchoices { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
+.lcrow { display: flex; flex-direction: column; gap: 6px; }
+.lcrow[hidden] { display: none; }
+.lcrow .lbl { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.rsz { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; max-width: 560px; }
+.rsz button { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 3px; height: 62px; padding: 4px 2px 7px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+.rsz button .g { font-weight: 800; line-height: 1; }
+.rsz button small { font-size: 11px; font-weight: 700; color: var(--muted); }
+.rsz button[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.rsz button[aria-checked="true"] small { color: var(--accent); }
+.lchips { display: flex; flex-wrap: wrap; gap: 8px; }
+.lchip { display: flex; align-items: center; gap: 10px; padding: 9px 14px 9px 10px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--surface); cursor: pointer; font-weight: 700; min-width: 170px; }
+.lchip input { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
+.lchip small { display: block; font-family: var(--f-num); font-weight: 600; font-size: 12px; color: var(--muted); }
+.lchip:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.lthumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+.lthumbs button { display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 6px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--sunk); cursor: pointer; color: var(--fg); }
+.lthumbs .tc { display: block; min-height: 40px; }
+.lthumbs .tc svg { display: block; width: 100%; height: auto; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.lthumbs small { font-size: 11px; font-weight: 700; color: var(--muted); text-align: center; line-height: 1.25; }
+.lthumbs button[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.lthumbs button[aria-checked="true"] small { color: var(--accent); }
