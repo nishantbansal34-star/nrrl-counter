@@ -18,12 +18,12 @@ language plpgsql security definer set search_path = '' as $$
 declare d counter.devices;
 begin
   d := counter.dev(p_key);
-  insert into counter.label_printers(device_id, name, printer, sizes, size_id, accepts, seen_at)
+  insert into counter.label_printers(device_id, name, printer, sizes, size_id, accepts, app_version, seen_at)
   values (d.id, left(coalesce(p_info->>'name', d.name, ''), 80), left(coalesce(p_info->>'printer', ''), 120),
           case when jsonb_typeof(p_info->'sizes') = 'array' then p_info->'sizes' else '[]'::jsonb end,
-          left(coalesce(p_info->>'size_id', ''), 20), coalesce((p_info->>'accepts')::boolean, true), now())
+          left(coalesce(p_info->>'size_id', ''), 20), coalesce((p_info->>'accepts')::boolean, true), left(coalesce(p_info->>'version', ''), 20), now())
   on conflict (device_id) do update set name = excluded.name, printer = excluded.printer, sizes = excluded.sizes,
-    size_id = excluded.size_id, accepts = excluded.accepts, seen_at = now();
+    size_id = excluded.size_id, accepts = excluded.accepts, app_version = excluded.app_version, seen_at = now();
   return json_build_object('ok', true);
 end $$;
 
@@ -63,7 +63,7 @@ declare s counter.staff;
 begin
   s := counter.who(p_token);
   perform counter.need(s, 'labels');
-  return coalesce((select json_agg(json_build_object('device_id', p.device_id, 'name', p.name, 'printer', p.printer, 'sizes', p.sizes, 'size_id', p.size_id) order by p.seen_at desc)
+  return coalesce((select json_agg(json_build_object('device_id', p.device_id, 'name', p.name, 'printer', p.printer, 'sizes', p.sizes, 'size_id', p.size_id, 'version', p.app_version) order by p.seen_at desc)
     from counter.label_printers p join counter.devices v on v.id = p.device_id
     where p.accepts and p.printer <> '' and not v.revoked and p.seen_at > now() - interval '2 minutes'), '[]'::json);
 end $$;

@@ -2,6 +2,7 @@
 // (when it is linked, has a label printer and "Print labels sent from phones" is on) takes it and prints it.
 'use strict';
 const { rpc } = require('./link');
+const VERSION = (() => { try { return require('./package.json').version || ''; } catch (e) { return ''; } })();
 
 function createPrintJobs({ getStore, printLabels, notify, syncNow }) {
   const state = { busy: false, lastBeat: 0, lastError: '', printed: 0, last: null };
@@ -15,7 +16,7 @@ function createPrintJobs({ getStore, printLabels, notify, syncNow }) {
     await rpc('counter_dev_printer_put', { p_key: key, p_info: {
       name: (st.getSetting('link_name') || 'Laptop').replace(/^Laptop \((.*)\) #\w+$/, '$1'), printer: printerOf(s),
       sizes: st.labelSizes().map(z => ({ id: z.id, w: +z.w, h: +z.h, across: +z.across })), size_id: st.getSetting('label_size') || '',
-      accepts: accepts(s) } });
+      accepts: accepts(s), version: VERSION } });
     state.lastBeat = Date.now();
   }
   async function printJob(st, job) {

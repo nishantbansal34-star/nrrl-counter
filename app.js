@@ -1247,6 +1247,7 @@ function openLabelSheet(it, opts = {}) {
       <select id="lPc" hidden></select>
       <div class="seg" role="group" aria-label="Laptop label size" id="lPcSize"></div>
       <button class="btn primary w" type="button" id="lPcGo">Print on laptop</button>
+      <p class="hint warn" id="lPcOld" hidden></p>
       <p class="hint" id="lPcState" aria-live="polite"></p>
     </div>
     <p class="hint" style="margin-top:10px" id="lHint">${canPdf() ? 'Share opens the label as a PDF: print it from your label printer’s app, or send it on WhatsApp.' : 'Saves the label as a picture.'} <span id="lPcHint">Checking for a laptop printer…</span></p>
@@ -1287,6 +1288,10 @@ function openLabelSheet(it, opts = {}) {
     if (!pcSize || !sizes.some(z => z.id === pcSize.id)) pcSize = sizes.find(z => z.id === LS.get('pcSize:' + pc.device_id, pc.size_id)) || sizes.find(z => z.id === pc.size_id) || sizes[0];
     $('#lPcSize', d).innerHTML = sizes.map(z => `<button type="button" data-z="${esc(z.id)}" aria-pressed="${z === pcSize}">${pcLabel(z)}</button>`).join('');
     $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`;
+    // a laptop older than 1.11.1 ignores Retail rate, Wholesale code and Rate size and uses its own settings
+    const oldPc = verBelow(pc.version, '1.11.1');
+    $('#lPcOld', d).hidden = !oldPc;
+    $('#lPcOld', d).textContent = oldPc ? `${pc.name} has an older NRRL Billing${pc.version ? ' (' + pc.version + ')' : ''}. It will use its own label settings, not Retail rate / Wholesale code / Rate size from here. Click “Update now” on that laptop.` : '';
     size = `${+pcSize.w}x${+pcSize.h}`; draw();
   };
   const loadPcs = async () => {
@@ -1321,6 +1326,13 @@ function openLabelSheet(it, opts = {}) {
     setTimeout(poll, 800);
   });
   $('#lAnother', d)?.addEventListener('click', () => { closeSheet(); openItemSheet(null); });
+}
+// true when version a is missing or older than b ("1.11.0" < "1.11.1")
+function verBelow(a, b) {
+  if (!a) return true;
+  const x = String(a).split('.').map(n => +n || 0), y = String(b).split('.').map(n => +n || 0);
+  for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0); }
+  return false;
 }
 // next free code made on a phone. Phones use NR50001 upwards and laptops NR10001 upwards, so a laptop
 // working offline never hands out the same code as a phone.
