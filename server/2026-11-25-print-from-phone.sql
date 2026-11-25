@@ -83,7 +83,10 @@ begin
   insert into counter.print_jobs(staff_id, staff_name, device_id, items, opts, labels)
   values (s.id, s.name, p_device,
           (select jsonb_agg(jsonb_build_object('code', left(x->>'code', 64), 'count', least(greatest(coalesce((x->>'count')::int, 0), 0), 1000))) from jsonb_array_elements(p_items) x),
-          jsonb_build_object('size_id', left(coalesce(p_opts->>'size_id', ''), 20), 'layout', left(coalesce(p_opts->>'layout', ''), 2), 'emph', left(coalesce(p_opts->>'emph', ''), 12)),
+          jsonb_build_object('size_id', left(coalesce(p_opts->>'size_id', ''), 20), 'layout', left(coalesce(p_opts->>'layout', ''), 2), 'emph', left(coalesce(p_opts->>'emph', ''), 12))
+            || case when jsonb_typeof(p_opts->'retail') = 'boolean' then jsonb_build_object('retail', p_opts->'retail') else '{}'::jsonb end
+            || case when jsonb_typeof(p_opts->'wholesale') = 'boolean' then jsonb_build_object('wholesale', p_opts->'wholesale') else '{}'::jsonb end
+            || case when jsonb_typeof(p_opts->'rate') = 'number' then jsonb_build_object('rate', least(greatest((p_opts->>'rate')::numeric, 70), 300)) else '{}'::jsonb end,
           total)
   returning print_jobs.id into jid;
   return json_build_object('id', jid);

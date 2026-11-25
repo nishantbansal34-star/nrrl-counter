@@ -24,6 +24,10 @@ function createPrintJobs({ getStore, printLabels, notify, syncNow }) {
     const s = { ...s0, label_w: z.w, label_h: z.h, label_across: z.across, label_gap: z.gap ?? '', label_vgap: z.vgap ?? '', label_shift: z.shift ?? '' };
     if (/^[A-H]$/.test(job.opts && job.opts.layout || '')) s.label_layout = job.opts.layout;
     if (['both', 'retail', 'wholesale'].includes(job.opts && job.opts.emph)) s.label_style = job.opts.emph;
+    // what the phone chose to show, and how big
+    if (job.opts && typeof job.opts.retail === 'boolean') s.label_price = job.opts.retail ? '1' : '0';
+    if (job.opts && typeof job.opts.wholesale === 'boolean') s.label_wcode = job.opts.wholesale ? '1' : '0';
+    if (job.opts && +job.opts.rate >= 70 && +job.opts.rate <= 300) s.label_rate_size = String(Math.round(+job.opts.rate));
     const entries = (job.items || []).map(x => ({ item: st.getItem(String(x.code)), code: x.code, count: +x.count || 0 }));
     const missing = entries.filter(e => !e.item || !e.item.active).map(e => e.code);
     if (missing.length) throw Object.assign(new Error(`Not on this laptop yet: ${missing.join(', ')}. Try again in a minute.`), { missing: true });

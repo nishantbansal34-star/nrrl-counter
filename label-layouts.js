@@ -53,7 +53,8 @@
      be = backend: fit(runs, maxW, maxH, style), barcode(code, maxW, maxH) → {w,h} | null, logo(maxW, maxH) → {w,h} | null */
   function layout(item, L, be) {
     const out = [], W = L.wD, H = L.hD, mm = v => Math.round(v * L.dpm);
-    const pad = mm(1.3), gap = mm(1), avW = W - 2 * pad;
+    // 1.8 mm from each edge: printers can shift the print about a millimetre, which cut off the last letter
+    const pad = mm(1.8), gap = mm(1), avW = W - 2 * pad;
     const rs = Math.max(0.7, Math.min(2.5, +L.rateScale || 1));
     const R = rates(item, L);
     const emph = L.emph === 'retail' || L.emph === 'wholesale' ? L.emph : 'both';

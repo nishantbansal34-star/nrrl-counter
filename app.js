@@ -1156,8 +1156,9 @@ function labelPrefs() {
     layout: LS.get('lblLayout', /^[A-H]$/.test(sh.label_layout || '') ? sh.label_layout : 'A'),
     emph: LS.get('lblEmph', ['both', 'retail', 'wholesale'].includes(sh.label_style) ? sh.label_style : 'both'),
     prefix: sh.wcode_prefix == null ? 'NRRL' : sh.wcode_prefix, mult: sh.wcode_mult || 2,
-    showRetail: sh.label_price !== '0', showWholesale: sh.label_wcode !== '0',
-    rateScale: rs >= 70 && rs <= 300 ? rs / 100 : 1, shop: sh.label_shop || 'NRRL',
+    // what to show and how big the rates are: this phone's own choice, else the laptop's
+    showRetail: LS.get('lblShowR', sh.label_price !== '0'), showWholesale: LS.get('lblShowW', sh.label_wcode !== '0'),
+    rateScale: (+LS.get('lblRate', rs >= 70 && rs <= 300 ? rs : 100)) / 100, shop: sh.label_shop || 'NRRL',
   };
 }
 // one label as a black-and-white picture, exactly the label's size in printer dots, using the shared layouts
@@ -1233,6 +1234,11 @@ function openLabelSheet(it, opts = {}) {
       <div class="field"><label class="lbl" for="lLayout">Layout</label><select id="lLayout">${NrrlLabels.LAYOUTS.map(([k, l]) => `<option value="${k}"${labelPrefs().layout === k ? ' selected' : ''}>${k} · ${esc(l)}</option>`).join('')}</select></div>
       <div class="field"><label class="lbl" for="lEmph">Bigger rate</label><select id="lEmph">${NrrlLabels.EMPHASIS.map(([k, l]) => `<option value="${k}"${labelPrefs().emph === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
     </div>
+    <div class="grid2" style="margin-top:12px">
+      <label class="field check"><input type="checkbox" id="lShowR" ${labelPrefs().showRetail ? 'checked' : ''}><span>Retail rate</span></label>
+      <label class="field check"><input type="checkbox" id="lShowW" ${labelPrefs().showWholesale ? 'checked' : ''}><span>Wholesale code (${esc((lblShared || {}).wcode_prefix ?? 'NRRL')})</span></label>
+      <div class="field w"><label class="lbl" for="lRate">Rate size</label><select id="lRate">${[[100, 'Normal'], [130, 'Large'], [160, 'Extra large'], [200, 'Huge'], [250, 'Biggest']].map(([k, l]) => `<option value="${k}"${Math.round(labelPrefs().rateScale * 100) === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
     <p class="hint" id="lFit" hidden style="margin-top:6px"></p>
     <div class="field" style="margin-top:12px"><span class="lbl">How many labels</span>
       <div class="ctr" style="margin:0"><button class="qb" type="button" id="lLess" aria-label="One less">−</button><input type="number" inputmode="numeric" id="lCopies" value="1" min="1" max="500" aria-label="Copies"><button class="qb" type="button" id="lMore" aria-label="One more">+</button></div></div>
@@ -1257,6 +1263,9 @@ function openLabelSheet(it, opts = {}) {
   if (!Object.keys(lblShared || {}).length) loadLabelSettings().then(() => { if ($('#labelSheet')) draw(); });
   $('#lLayout', d).addEventListener('change', e => { LS.set('lblLayout', e.target.value); draw(); });
   $('#lEmph', d).addEventListener('change', e => { LS.set('lblEmph', e.target.value); draw(); });
+  $('#lShowR', d).addEventListener('change', e => { LS.set('lblShowR', e.target.checked); draw(); });
+  $('#lShowW', d).addEventListener('change', e => { LS.set('lblShowW', e.target.checked); draw(); });
+  $('#lRate', d).addEventListener('change', e => { LS.set('lblRate', +e.target.value); draw(); });
   $('#lSize', d).addEventListener('click', e => { const b = e.target.closest('[data-size]'); if (!b) return; size = b.dataset.size; LS.set('lblSize', size); $$('#lSize button', d).forEach(x => x.setAttribute('aria-pressed', x === b)); draw(); });
   const setC = n => { copies = Math.max(1, Math.min(500, Math.round(+n) || 1)); $('#lCopies', d).value = copies; };
   $('#lLess', d).addEventListener('click', () => setC(copies - 1));
@@ -1296,7 +1305,7 @@ function openLabelSheet(it, opts = {}) {
     const btn = $('#lPcGo', d), st = $('#lPcState', d);
     btn.disabled = true; st.textContent = 'Sending…';
     let job;
-    try { job = await api('counter_print_send', { p_token: S.token, p_device: pc.device_id, p_items: [{ code: it.code, count: copies }], p_opts: { size_id: pcSize.id, layout: $('#lLayout', d).value, emph: $('#lEmph', d).value } }); }
+    try { job = await api('counter_print_send', { p_token: S.token, p_device: pc.device_id, p_items: [{ code: it.code, count: copies }], p_opts: { size_id: pcSize.id, layout: $('#lLayout', d).value, emph: $('#lEmph', d).value, retail: $('#lShowR', d).checked, wholesale: $('#lShowW', d).checked, rate: +$('#lRate', d).value } }); }
     catch (e) { st.textContent = e.message; btn.disabled = false; return; }
     const t0 = Date.now();
     const poll = async () => {
