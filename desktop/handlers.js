@@ -61,6 +61,7 @@ function makeHandlers(ctx) {
     'purchases.get': id => st().getPurchase(id),
     'purchases.cancel': id => st().cancelPurchase(id),
     'audit.list': q => st().auditList(q || {}),
+    'printJobs.status': () => ctx.printJobsStatus ? ctx.printJobsStatus() : { linked: false },
     'app.checkUpdate': () => ctx.checkUpdate ? ctx.checkUpdate() : { available: false },
     'app.installUpdate': () => { if (!ctx.installUpdate) throw new Error('Updates are not available here.'); return ctx.installUpdate(); },
     'app.openUrl': url => { if (!/^https:\/\/(wa\.me|api\.whatsapp\.com)\//.test(String(url))) throw new Error('Not allowed.'); return ctx.openUrl ? ctx.openUrl(url) : false; },

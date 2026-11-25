@@ -65,6 +65,7 @@ const DEFAULTS = {
   label_rate_size: '100',
   label_style: 'both',
   label_layout: 'A',
+  print_from_phones: '1',
   label_shop: 'NRRL',
   bill_format: 'thermal',
   a4_printer: '',
@@ -81,7 +82,7 @@ const DEFAULTS = {
 };
 const SHARED_LABEL = ['wcode_prefix', 'wcode_mult', 'label_layout', 'label_style', 'label_shop', 'label_price', 'label_wcode', 'label_rate_size'];
 const EDITABLE = new Set(['shop_name', 'shop_address', 'shop_phone', 'gstin', 'footer', 'printer', 'paper', 'print_margin', 'font_size',
-  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'label_show_logo', 'label_logo_invert', 'label_rate_size', 'label_style', 'label_layout', 'label_shop', 'bill_format', 'a4_printer', 'pdf_format', 'wa_mode', 'invoice_terms', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
+  'auto_print', 'copies', 'bill_prefix', 'next_bill', 'label_printer', 'label_w', 'label_h', 'label_price', 'label_dpi', 'label_bar', 'label_across', 'label_gap', 'label_shift', 'label_mode', 'label_vgap', 'label_flip', 'label_density', 'label_wcode', 'label_show_logo', 'label_logo_invert', 'label_rate_size', 'label_style', 'label_layout', 'label_shop', 'print_from_phones', 'bill_format', 'a4_printer', 'pdf_format', 'wa_mode', 'invoice_terms', 'wcode_prefix', 'wcode_mult', 'low_stock', 'backup_extra']);
 
 class Store {
   constructor(file) {

@@ -1806,6 +1806,8 @@ async function renderSettings() {
         <label class="f"><span>Label layout</span>${layoutSel('s_label_layout', s.label_layout)}</label>
         <label class="f"><span>Bigger rate</span>${styleSel('s_label_style', s.label_style)}</label>
         <label class="f"><span>Shop name on labels (layout H)</span><input type="text" id="s_label_shop" maxlength="24" value="${esc(s.label_shop ?? 'NRRL')}"></label>
+        <label class="f w" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="s_print_from_phones" ${s.print_from_phones !== '0' ? 'checked' : ''}> <span style="text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg);font-weight:500">Print labels sent from phones on this laptop’s label printer</span></label>
+        <p class="muted small w" id="pjState"></p>
         <label class="f"><span>Rate size on labels</span>${rateSel('s_label_rate_size', s.label_rate_size)}</label>
         <p class="muted small" style="align-self:end">Bigger rates are easier to read; the barcode gets a little shorter. Use <b>Preview one row</b> to check.</p>
         <label class="f"><span>Wholesale code starts with</span><input type="text" id="s_wcode_prefix" value="${esc(s.wcode_prefix ?? 'NRRL')}"></label>
@@ -1842,7 +1844,7 @@ async function renderSettings() {
   const collect = () => {
     const o = {}; for (const k of keys) o[k] = $('#s_' + k).value;
     if ($('#s_label_show_logo')) { o.label_show_logo = $('#s_label_show_logo').checked ? '1' : '0'; o.label_logo_invert = $('#s_label_logo_invert').checked ? '1' : '0'; }
-    o.label_price = $('#s_label_price').checked ? '1' : '0'; o.label_flip = $('#s_label_flip').checked ? '1' : '0'; o.label_wcode = $('#s_label_wcode').checked ? '1' : '0';
+    o.label_price = $('#s_label_price').checked ? '1' : '0'; o.label_flip = $('#s_label_flip').checked ? '1' : '0'; o.label_wcode = $('#s_label_wcode').checked ? '1' : '0'; o.print_from_phones = $('#s_print_from_phones').checked ? '1' : '0';
     return o;
   };
   const save = async quiet => {
@@ -1853,6 +1855,13 @@ async function renderSettings() {
   $('#s_wcode_prefix').addEventListener('input', wEx); $('#s_wcode_mult').addEventListener('input', wEx); wEx();
   $('#sSave').addEventListener('click', () => save(false));
   $('#sUpd').addEventListener('click', () => checkUpdate(true));
+  rpc('printJobs.status').then(p => {
+    const el = $('#pjState'); if (!el || !p) return;
+    el.textContent = !p.linked ? 'Link this laptop to the phone app (Phone app section) so phones can send labels here.'
+      : !p.printer ? 'Choose the label printer above first.'
+      : !p.accepts ? 'Phones can’t send labels to this laptop.'
+      : `Phones can send labels here. They print on ${p.printer}${p.printed ? ` · ${p.printed} printed since the app opened` : ''}.`;
+  }).catch(() => {});
   $('#testPrint').addEventListener('click', async () => { if (!(await save(true))) return; rpc('print.test').then(() => toast('Test receipt sent')).catch(err => toast(err.message, { err: true, ms: 9000 })); });
   $('#prevA4').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.a4preview', 'sample'); openModal(`<h2>A4 invoice preview</h2><div style="display:flex;justify-content:center;background:var(--sunk);border-radius:8px;padding:12px;overflow:auto"><iframe title="A4 preview" sandbox srcdoc="${esc(html)}" style="border:0;width:794px;height:70vh;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`, { wide: true }); });
   $('#prevPrint').addEventListener('click', async () => { if (!(await save(true))) return; const html = await rpc('print.preview', 'sample'); openModal(`<h2>Receipt preview</h2><p class="muted">Paper ${esc(S.settings.paper)} mm. The real print may look slightly different depending on the printer.</p><div style="display:flex;justify-content:center"><iframe title="Receipt preview" sandbox srcdoc="${esc(html)}" style="border:1px solid var(--line);width:${S.settings.paper === '58' ? 240 : 330}px;height:560px;background:#fff"></iframe></div><div class="foot"><button type="button" class="btn" data-close>Close</button></div>`); });
@@ -2012,6 +2021,11 @@ async function checkUpdate(manual) {
     catch (e) { $('#updMsg', box).textContent = e.message; $('#updNow', box).disabled = false; $('#updLater', box).disabled = false; }
   });
 }
+window.api.on && window.api.on('print-job', j => {
+  if (!j) return;
+  if (j.ok) toast(`Printed ${j.labels} label${j.labels === 1 ? '' : 's'} sent from ${j.by || 'a phone'}`);
+  else toast(`Labels from ${j.by || 'a phone'} did not print: ${j.error}`, { err: true, ms: 9000 });
+});
 window.api.on && window.api.on('update-progress', msg => { const m = $('#updMsg'); if (m) m.textContent = msg; });
 setTimeout(() => checkUpdate(false), 8000);
 setInterval(() => checkUpdate(false), 6 * 3600e3);

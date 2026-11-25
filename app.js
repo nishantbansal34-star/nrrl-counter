@@ -51,6 +51,8 @@ const ERR = {
   CANT_BILL: 'That person can’t make bills (switched off, or blocked).',
   NO_ACCESS: 'You don’t have access to this. Ask the owner.',
   NO_CUSTOMER: 'This customer has no udhaar account.',
+  NO_PRINTER: 'That laptop isn’t taking labels right now. Open NRRL Billing on it.',
+  TOO_MANY_LABELS: 'Send at most 2000 labels at a time.',
   'Request timed out': 'The internet is too slow right now. Try again.',
 };
 class ApiError extends Error { constructor(code, net) { super(ERR[code] || code); this.code = code; this.net = !!net; } }
@@ -1160,7 +1162,7 @@ function labelPrefs() {
 }
 // one label as a black-and-white picture, exactly the label's size in printer dots, using the shared layouts
 function labelCanvas(it, size, prefs) {
-  const [wmm, hmm] = LABEL_SIZES[size] || LABEL_SIZES['50x25'];
+  const [wmm, hmm] = LABEL_SIZES[size] || ((/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(size) || []).slice(1).map(Number).filter(v => v > 0).length === 2 ? size.split('x').map(Number) : LABEL_SIZES['50x25']);
   const W = wmm * DOT, H = hmm * DOT;
   const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const g = cv.getContext('2d');
@@ -1234,7 +1236,14 @@ function openLabelSheet(it, opts = {}) {
     <p class="hint" id="lFit" hidden style="margin-top:6px"></p>
     <div class="field" style="margin-top:12px"><span class="lbl">How many labels</span>
       <div class="ctr" style="margin:0"><button class="qb" type="button" id="lLess" aria-label="One less">−</button><input type="number" inputmode="numeric" id="lCopies" value="1" min="1" max="500" aria-label="Copies"><button class="qb" type="button" id="lMore" aria-label="One more">+</button></div></div>
-    <p class="hint" style="margin-top:10px">${canPdf() ? 'Share opens the label as a PDF: print it from your label printer’s app, or send it on WhatsApp.' : 'Saves the label as a picture.'} The laptop can print it too: Labels → search ${esc(it.code)}.</p>
+    <div class="remote" id="lRemote" hidden>
+      <div class="lbl">Print on the laptop’s label printer</div>
+      <select id="lPc" hidden></select>
+      <div class="seg" role="group" aria-label="Laptop label size" id="lPcSize"></div>
+      <button class="btn primary w" type="button" id="lPcGo">Print on laptop</button>
+      <p class="hint" id="lPcState" aria-live="polite"></p>
+    </div>
+    <p class="hint" style="margin-top:10px" id="lHint">${canPdf() ? 'Share opens the label as a PDF: print it from your label printer’s app, or send it on WhatsApp.' : 'Saves the label as a picture.'} <span id="lPcHint">Checking for a laptop printer…</span></p>
     <div class="acts2">
       ${opts.fresh ? '<button class="btn" type="button" id="lAnother">Add another item</button>' : '<button class="btn" type="button" id="lClose">Close</button>'}
       <button class="btn primary" type="button" id="lShare">${canPdf() ? 'Share label' : 'Save label'}</button>
@@ -1255,6 +1264,53 @@ function openLabelSheet(it, opts = {}) {
   $('#lCopies', d).addEventListener('change', e => setC(e.target.value));
   $('#lShare', d).addEventListener('click', () => shareLabels(it, size, copies));
   $$('#lClose', d).forEach(b => b.addEventListener('click', closeSheet));
+  // print straight on a laptop's label printer: the phone sends the job, the laptop prints it
+  let pcs = [], pc = null, pcSize = null, phoneSize = size;
+  const pcLabel = z => `${+z.w} × ${+z.h} mm${+z.across > 1 ? ` · ${+z.across} across` : ''}`;
+  const showPc = () => {
+    const on = !!pc;
+    $('#lRemote', d).hidden = !on; $('#lSize', d).closest('.field').hidden = on;
+    $('#lShare', d).classList.toggle('primary', !on);
+    if (!on) { size = phoneSize; draw(); return; }
+    $('#lPc', d).hidden = pcs.length < 2;
+    $('#lPc', d).innerHTML = pcs.map((p, i) => `<option value="${i}"${p === pc ? ' selected' : ''}>${esc(p.name)} · ${esc(p.printer)}</option>`).join('');
+    const sizes = Array.isArray(pc.sizes) && pc.sizes.length ? pc.sizes : [{ id: '', w: 50, h: 25, across: 1 }];
+    if (!pcSize || !sizes.some(z => z.id === pcSize.id)) pcSize = sizes.find(z => z.id === LS.get('pcSize:' + pc.device_id, pc.size_id)) || sizes.find(z => z.id === pc.size_id) || sizes[0];
+    $('#lPcSize', d).innerHTML = sizes.map(z => `<button type="button" data-z="${esc(z.id)}" aria-pressed="${z === pcSize}">${pcLabel(z)}</button>`).join('');
+    $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`;
+    size = `${+pcSize.w}x${+pcSize.h}`; draw();
+  };
+  const loadPcs = async () => {
+    try { pcs = await api('counter_label_printers', { p_token: S.token }) || []; } catch (e) { pcs = []; }
+    if (!$('#labelSheet')) return;
+    pc = pcs.find(p => p.device_id === LS.get('pcPrinter', '')) || pcs[0] || null;
+    $('#lPcHint', d).textContent = pc ? '' : 'To print straight from this phone, keep NRRL Billing open on the laptop that has the label printer.';
+    showPc();
+  };
+  loadPcs();
+  $('#lPc', d).addEventListener('change', e => { pc = pcs[+e.target.value]; pcSize = null; LS.set('pcPrinter', pc.device_id); showPc(); });
+  $('#lPcSize', d).addEventListener('click', e => { const b = e.target.closest('[data-z]'); if (!b) return; pcSize = (pc.sizes || []).find(z => z.id === b.dataset.z) || pcSize; LS.set('pcSize:' + pc.device_id, pcSize.id); showPc(); });
+  ['#lLess', '#lMore'].forEach(k => $(k, d).addEventListener('click', () => { if (pc) $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`; }));
+  $('#lCopies', d).addEventListener('change', () => { if (pc) $('#lPcGo', d).textContent = `Print ${copies} label${copies === 1 ? '' : 's'} on ${pc.name}`; });
+  $('#lPcGo', d).addEventListener('click', async () => {
+    const btn = $('#lPcGo', d), st = $('#lPcState', d);
+    btn.disabled = true; st.textContent = 'Sending…';
+    let job;
+    try { job = await api('counter_print_send', { p_token: S.token, p_device: pc.device_id, p_items: [{ code: it.code, count: copies }], p_opts: { size_id: pcSize.id, layout: $('#lLayout', d).value, emph: $('#lEmph', d).value } }); }
+    catch (e) { st.textContent = e.message; btn.disabled = false; return; }
+    const t0 = Date.now();
+    const poll = async () => {
+      if (!$('#labelSheet')) return;
+      let r = null; try { r = await api('counter_print_status', { p_token: S.token, p_id: job.id }); } catch (e) {}
+      const secs = Math.round((Date.now() - t0) / 1000);
+      if (r && r.status === 'done') { st.textContent = `✓ Printed ${r.labels} label${r.labels === 1 ? '' : 's'} on ${pc.name}`; beep(true); btn.disabled = false; return; }
+      if (r && (r.status === 'failed' || r.status === 'cancelled')) { st.textContent = 'Did not print: ' + (r.problem || r.status); beep(false); btn.disabled = false; return; }
+      if (secs > 90) { st.textContent = `${pc.name} hasn’t answered. Check that NRRL Billing is open and online on it; it prints as soon as it is.`; btn.disabled = false; return; }
+      st.textContent = r && r.status === 'printing' ? 'Printing…' : `Waiting for ${pc.name}…`;
+      setTimeout(poll, 1500);
+    };
+    setTimeout(poll, 800);
+  });
   $('#lAnother', d)?.addEventListener('click', () => { closeSheet(); openItemSheet(null); });
 }
 // next free code made on a phone. Phones use NR50001 upwards and laptops NR10001 upwards, so a laptop

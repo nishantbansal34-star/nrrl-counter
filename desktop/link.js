@@ -226,4 +226,4 @@ function createLink(getStore, onChange) {
     unlink() { const st = getStore(); st.setSetting('link_key', ''); st.linkClear(); },
   };
 }
-module.exports = { createLink };
+module.exports = { createLink, rpc };

@@ -14,6 +14,11 @@ if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 let win = null, store = null, dirty = false, quitting = false;
 const sync = createSync(() => store);
 const link = createLink(() => store, changes => { if (win && !win.isDestroyed()) win.webContents.send('data-changed', changes); });
+// labels sent from the phone app, printed on this laptop's label printer
+const printJobs = require('./print-jobs').createPrintJobs({
+  getStore: () => store, printLabels: (e, s) => P.printLabels(e, s), syncNow: () => link.tick(),
+  notify: last => { if (win && !win.isDestroyed()) win.webContents.send('print-job', last); },
+});
 const dataDir = () => process.env.NRRL_DATA_DIR || path.join(app.getPath('documents'), 'NRRL Billing');
 const backupDir = () => path.join(dataDir(), 'Backups');
 const dbFile = () => path.join(dataDir(), 'nrrl-billing.db');
@@ -171,6 +176,7 @@ function setupIPC() {
       await shell.openExternal('https://web.whatsapp.com/send?' + q);
     },
     showFile: file => { shell.showItemInFolder(file); return true; },
+    printJobsStatus: () => printJobs.status(),
     checkUpdate,
     installUpdate: () => installUpdate(msg => { if (win && !win.isDestroyed()) win.webContents.send('update-progress', msg); }),
   });
@@ -180,6 +186,7 @@ function setupIPC() {
     try {
       const data = await fn(...(Array.isArray(args) ? args : []));
       if (/^(customers|payments|returns|suppliers|purchases)\./.test(method)) store.setSetting('ledger_dirty', '1');
+      if (method === 'settings.save' || method.startsWith('labels.') || method.startsWith('link.')) printJobs.soon();
       if (WRITES.has(method)) { dirty = true; if (method.startsWith('items.')) store.setSetting('items_dirty', '1'); sync.soon(); link.soon(); }
       return { ok: true, data };
     } catch (err) {
@@ -258,6 +265,7 @@ app.whenReady().then(async () => {
   createWindow();
   sync.start();
   link.start();
+  printJobs.start();
   // backup at start if the last one is older than 6 hours, then every 30 minutes when something changed
   const last = Date.parse(store.getSetting('last_backup') || '') || 0;
   if (Date.now() - last > 6 * 3600e3) backupNow('start').catch(() => {});
